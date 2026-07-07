@@ -11,19 +11,41 @@ Primary goal: maximize caption accuracy and style match for four styles:
 - `humorous_tech`
 - `humorous_non_tech`
 
-The system must make Gemma 4 central to the pipeline.
+The system must make Gemma 4 central to the final captioning pipeline because the team is also targeting the Gemma challenge.
 
-## Competition constraints
+Before making changes, read:
+
+1. `docs/track2-guide.md`
+2. `docs/codex-prompts.md`
+
+## Competition constraints for Track 2
 
 - Container must read `/input/tasks.json` on startup.
 - Container must write `/output/results.json` before exiting.
 - Exit code must be `0` on success.
-- Runtime limit is 10 minutes.
-- Output must be valid JSON.
+- Maximum runtime is 10 minutes.
+- No inference log is required for Track 2.
+- Track 2 does not inject API keys or model restrictions.
+- Track 2 allows any model, API, or framework, but this repo should use Gemma 4 as the main reasoning/captioning model.
+- Hidden videos are 30 seconds to 2 minutes long.
+- Output must include a caption for every requested style for every clip.
 - Missing requested styles score zero for that clip.
-- Do not hardcode sample-clip answers.
+- `/output/results.json` must be valid JSON.
 - All responses must be in English.
-- Docker image must support `linux/amd64`.
+- Do not hardcode or cache answers to specific clips.
+- Evaluation uses unseen clips, not only the public examples.
+- Docker image compressed size must not exceed 10GB.
+- Container image must be publicly pullable at submission time.
+- The judging VM runs `linux/amd64`; Docker images must include a `linux/amd64` manifest.
+
+## Scoring target
+
+Each caption is judged on:
+
+1. **Caption accuracy**: faithfulness to the video content.
+2. **Style match**: fit to the requested tone.
+
+Every implementation choice should improve one of these two metrics or protect valid output generation.
 
 ## Target pipeline
 
@@ -32,11 +54,13 @@ Implement in this order:
 1. Input/output harness
 2. Video download
 3. Video metadata probing
-4. Frame extraction
-5. Gemma 4 factual video summary
-6. Gemma 4 caption generation
-7. Gemma 4 verifier/reranker
-8. JSON validation and fallback repair
+4. Uniform frame extraction
+5. Placeholder output and validation
+6. Gemma 4 factual video summary
+7. Gemma 4 caption generation
+8. Gemma 4 verifier/reranker
+9. AKS-lite adaptive frame selection
+10. Docker and CI hardening
 
 Recommended runtime flow:
 
@@ -55,16 +79,16 @@ Recommended runtime flow:
 
 ## Downloader and frame extraction choice
 
-Use Python `httpx` or `requests` for downloading remote MP4 files. Do not use ffmpeg as the primary downloader.
+Use Python `httpx` or `requests` for downloading remote MP4 files. Do not use `ffmpeg` as the primary downloader.
 
-Use `ffprobe` for metadata and `ffmpeg` for frame extraction. Prefer ffmpeg over OpenCV for the first production path because it is more reliable inside Docker for MP4 decoding.
+Use `ffprobe` for metadata and `ffmpeg` for frame extraction. Prefer `ffmpeg` over OpenCV for the first production extraction path because it is more reliable inside Docker for MP4 decoding.
 
 Recommended dependency split:
 
 - Download: `httpx`
 - Metadata: `ffprobe`
 - Frame extraction: `ffmpeg`
-- Image handling and optional scoring: `Pillow`, `opencv-python-headless`, `numpy`
+- Optional AKS-lite scoring: `Pillow`, `opencv-python-headless`, `numpy`
 
 ## Frame extraction plan
 
@@ -72,7 +96,7 @@ Start with a reliable baseline, then upgrade.
 
 ### Baseline
 
-Extract uniformly spaced frames:
+Extract uniformly spaced frames by timestamp:
 
 - 30 to 45 seconds: 10 to 12 frames
 - 45 to 90 seconds: 12 to 16 frames
@@ -82,7 +106,7 @@ Extract uniformly spaced frames:
 
 Implement AKS-lite candidate selection:
 
-- uniform coverage
+- uniform temporal coverage
 - scene-change detection
 - motion score
 - sharpness score
@@ -111,16 +135,16 @@ Suggested evidence schema:
 
 Caption constraints:
 
-- 12 to 25 words per caption
-- faithful to the video evidence
-- no invented objects, people, speech, brands, or locations
-- sarcastic must be dry and lightly ironic, not mean
-- humorous_tech must include technology or programming-flavored humor
-- humorous_non_tech must avoid technical jargon
+- 12 to 25 words per caption.
+- Faithfulness beats humor.
+- No invented objects, people, speech, brands, locations, identities, or events.
+- `sarcastic` must be dry and lightly ironic, not hostile.
+- `humorous_tech` must include technology or programming-flavored humor.
+- `humorous_non_tech` must avoid technical jargon.
 
 ## Output format
 
-For each task, output exactly:
+For each task, output:
 
 ```json
 {
@@ -134,7 +158,7 @@ For each task, output exactly:
 }
 ```
 
-Only include styles requested in the task, unless tests explicitly require all four.
+Only include styles requested in the task unless tests explicitly require all four.
 
 ## Repository structure to create
 
@@ -144,6 +168,9 @@ GemmaClip/
   README.md
   pyproject.toml
   Dockerfile
+  docs/
+    track2-guide.md
+    codex-prompts.md
   src/gemmaclip/
     __init__.py
     main.py
@@ -151,6 +178,7 @@ GemmaClip/
     download.py
     video.py
     frames.py
+    aks_lite.py
     gemma_client.py
     prompts.py
     captioner.py
@@ -171,6 +199,7 @@ GemmaClip/
 - If one video fails, return safe fallback captions for that task rather than crashing the entire batch.
 - Validate JSON before writing output.
 - Prefer deterministic settings for final caption generation unless candidate generation is intentionally enabled.
+- Do not specialize prompts or code for the public example clips.
 
 ## First milestone
 
