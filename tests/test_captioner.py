@@ -387,44 +387,37 @@ def test_gemma_client_caches_first_working_model_after_fallback():
 
 
 def test_normalize_captions_rejects_banned_speculation_phrase():
-    try:
-        normalize_captions(
-            {"formal": "A person probably waits beside traffic.", "sarcastic": "A worker stands by while traffic does the usual thing."},
-            ("formal", "sarcastic"),
-            make_evidence(),
-        )
-    except ValueError as exc:
-        assert "banned speculation phrase" in str(exc)
-    else:
-        raise AssertionError("Expected normalize_captions to reject banned speculation phrases.")
+    captions = normalize_captions(
+        {"formal": "A person probably waits beside traffic.", "sarcastic": "A worker seems to be standing by while traffic does the usual thing."},
+        ("formal", "sarcastic"),
+        make_evidence(),
+    )
+
+    assert captions["formal"] == "A person waits beside traffic."
+    assert captions["sarcastic"] == "A worker is standing by while traffic does the usual thing."
 
 
 def test_normalize_captions_rejects_overlong_caption():
     overlong = "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentytfour twentytfive twentysix"
 
-    try:
-        normalize_captions(
-            {"formal": overlong, "sarcastic": "A worker stands quietly while the room acts extremely impressed by ordinary office activity."},
-            ("formal", "sarcastic"),
-            make_evidence(),
-        )
-    except ValueError as exc:
-        assert "maximum allowed word count" in str(exc)
-    else:
-        raise AssertionError("Expected normalize_captions to reject overlong captions.")
+    captions = normalize_captions(
+        {"formal": overlong, "sarcastic": "A worker stands quietly while the room acts extremely impressed by ordinary office activity."},
+        ("formal", "sarcastic"),
+        make_evidence(),
+    )
+
+    assert len(captions["formal"].split()) == 25
+    assert "twentysix" not in captions["formal"]
 
 
 def test_normalize_captions_rejects_unsupported_humorous_tech_script_claim():
-    try:
-        normalize_captions(
-            {"humorous_tech": "A worker watches traffic like a script rerun that forgot to deploy anything new today."},
-            ("humorous_tech",),
-            make_evidence(actions=["walking"]),
-        )
-    except ValueError as exc:
-        assert "unsupported coding or scripting claim" in str(exc)
-    else:
-        raise AssertionError("Expected normalize_captions to reject unsupported scripting claims.")
+    captions = normalize_captions(
+        {"humorous_tech": "A worker watches traffic like a script rerun that forgot to debug anything new for the developer today."},
+        ("humorous_tech",),
+        make_evidence(actions=["walking"]),
+    )
+
+    assert captions["humorous_tech"] == "A worker watches traffic like a process rerun that forgot to troubleshoot anything new for the worker today."
 
 
 def test_normalize_captions_allows_humorous_tech_metaphor_without_coding_claim():
@@ -435,6 +428,32 @@ def test_normalize_captions_allows_humorous_tech_metaphor_without_coding_claim()
     )
 
     assert "humorous_tech" in captions
+
+
+def test_normalize_captions_missing_style_key_still_raises():
+    try:
+        normalize_captions(
+            {"formal": "A worker stands near a desk in a quiet office during a routine moment."},
+            ("formal", "sarcastic"),
+            make_evidence(),
+        )
+    except ValueError as exc:
+        assert "style sarcastic" in str(exc)
+    else:
+        raise AssertionError("Expected normalize_captions to raise for a missing style key.")
+
+
+def test_normalize_captions_empty_caption_still_raises():
+    try:
+        normalize_captions(
+            {"formal": "   ", "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today."},
+            ("formal", "sarcastic"),
+            make_evidence(),
+        )
+    except ValueError as exc:
+        assert "style formal" in str(exc)
+    else:
+        raise AssertionError("Expected normalize_captions to raise for an empty caption.")
 
 
 def test_verifier_is_skipped_when_disabled(tmp_path):
@@ -495,7 +514,8 @@ def test_verifier_output_is_validated():
         {},
     )
 
-    assert captions == original
+    assert captions["formal"] == "A worker stands here."
+    assert captions["sarcastic"] == original["sarcastic"]
 
 
 def test_invalid_verifier_output_empty_object_keeps_original_captions():

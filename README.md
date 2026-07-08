@@ -1,14 +1,17 @@
 # GemmaClip
 
-GemmaClip is a Track 2 AMD Developer Hackathon video captioning agent. It reads `/input/tasks.json`, downloads each video, probes metadata with `ffprobe`, extracts representative frames with `AKS-lite`, uses Gemma-first Fireworks inference to build factual evidence, generates style-specific captions, optionally verifies/refines them, and writes `/output/results.json`.
+GemmaClip is a Track 2 AMD Developer Hackathon video captioning agent. It reads `/input/tasks.json`, downloads each video, probes metadata with `ffprobe`, extracts representative frames with `AKS-lite`, uses Fireworks-hosted multimodel inference to build factual evidence and captions, optionally verifies/refines them, and writes `/output/results.json`.
 
 Runtime model configuration:
 
 - `FIREWORKS_API_KEY` or `GEMMA_API_KEY` must be injected at runtime.
 - No secrets are baked into the Docker image, README examples, source code, or tests.
-- GemmaClip tries Gemma 4 first with `accounts/fireworks/models/gemma-4-31b-it`.
-- If that model is unavailable to the runtime key, GemmaClip tries fallback models from `GEMMA_FALLBACK_MODELS`, or `accounts/fireworks/models/kimi-k2p6` by default.
-- Set `GEMMA_MODEL` to point at a different primary model, including a local or dedicated Fireworks deployment path.
+- Default vision model: `accounts/fireworks/models/qwen3p7-plus`.
+- Default text model: `accounts/fireworks/models/deepseek-v4-pro`.
+- Set `GEMMA_MODEL` to override both vision and text model selection, which is useful for local Gemma 4 deployment testing.
+- `GEMMA_VISION_MODEL` and `GEMMA_TEXT_MODEL` can override the default split model choices independently.
+- If a configured model is unavailable to the runtime key, GemmaClip tries fallback models from `GEMMA_FALLBACK_MODELS`, or `accounts/fireworks/models/kimi-k2p6` by default.
+- `GEMMACLIP_DISABLE_VERIFIER=true` skips the optional verifier/refiner pass.
 
 Local run:
 
@@ -43,8 +46,8 @@ make test
 make run-local INPUT=examples/tasks.json OUTPUT=output/results.json
 ```
 
-Docker build:
+Docker build and push:
 
 ```bash
-docker buildx build --platform linux/amd64 --tag gemmaclip:latest .
+docker buildx build --platform linux/amd64 --tag ghcr.io/armmyc/gemmaclip:v2 --push .
 ```

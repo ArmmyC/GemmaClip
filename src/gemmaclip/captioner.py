@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from gemmaclip.frames import ExtractedFrame
-from gemmaclip.gemma_client import GemmaClient, GemmaConfig, GemmaModelConfig, extract_json_objects, load_gemma_config
+from gemmaclip.gemma_client import GemmaClient, GemmaModelConfig, extract_json_objects, load_gemma_config
 from gemmaclip.io import Task, safe_task_id
 from gemmaclip.prompts import (
     EVIDENCE_SCHEMA,
@@ -32,10 +32,6 @@ BANNED_SPECULATION_PHRASES = (
     "maybe",
     "appears to be",
     "seems to be",
-)
-SPECULATION_PATTERNS = tuple(
-    re.compile(rf"\b{re.escape(phrase)}\b")
-    for phrase in BANNED_SPECULATION_PHRASES
 )
 TECH_CLAIM_PATTERNS = (
     re.compile(r"\bscript\b"),
@@ -60,6 +56,24 @@ TECH_EVIDENCE_PATTERNS = (
     re.compile(r"\bsoftware development\b"),
     re.compile(r"\bterminal\b"),
     re.compile(r"\bcommand line\b"),
+)
+SOFT_TECH_REPLACEMENTS = (
+    (re.compile(r"\bscripts\b", re.IGNORECASE), "processes"),
+    (re.compile(r"\bscript\b", re.IGNORECASE), "process"),
+    (re.compile(r"\bcoding\b", re.IGNORECASE), "computer work"),
+    (re.compile(r"\bprogramming\b", re.IGNORECASE), "computer work"),
+    (re.compile(r"\bsoftware development\b", re.IGNORECASE), "computer work"),
+    (re.compile(r"\bcode\b", re.IGNORECASE), "computer work"),
+    (re.compile(r"\bdebugging\b", re.IGNORECASE), "troubleshooting"),
+    (re.compile(r"\bdebug\b", re.IGNORECASE), "troubleshoot"),
+    (re.compile(r"\bdeveloper\b", re.IGNORECASE), "worker"),
+)
+SOFT_SPECULATION_REPLACEMENTS = (
+    (re.compile(r"\bappears to be\b", re.IGNORECASE), "is"),
+    (re.compile(r"\bseems to be\b", re.IGNORECASE), "is"),
+    (re.compile(r"\blikely\b", re.IGNORECASE), ""),
+    (re.compile(r"\bprobably\b", re.IGNORECASE), ""),
+    (re.compile(r"\bmaybe\b", re.IGNORECASE), ""),
 )
 
 
@@ -399,15 +413,11 @@ def normalize_captions(
     styles: Sequence[str],
     evidence: dict[str, Any],
 ) -> dict[str, str]:
-    captions: dict[str, str] = {}
-    for style in styles:
-        value = payload.get(style)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"Model response did not include a valid caption for style {style}.")
-        caption = value.strip()
-        validate_caption(caption, style, evidence)
-        captions[style] = caption
-    return captions
+    captions = validate_caption_structure(payload, styles)
+    return {
+        style: cleanup_caption(caption, style, evidence)
+        for style, caption in captions.items()
+    }
 
 
 def extract_caption_json(text: str, styles: Sequence[str]) -> dict[str, Any]:
@@ -443,20 +453,30 @@ def maybe_verify_captions(
     return verified_captions
 
 
-def validate_caption(caption: str, style: str, evidence: dict[str, Any]) -> None:
-    if not caption.strip():
-        raise ValueError("Caption must not be empty.")
+def validate_caption_structure(
+    payload: Mapping[str, Any],
+    styles: Sequence[str],
+) -> dict[str, str]:
+    captions: dict[str, str] = {}
+    for style in styles:
+        value = payload.get(style)
+        if not isinstance(value, str):
+            raise ValueError(f"Model response did not include a valid caption for style {style}.")
+        caption = value.strip()
+        if not caption:
+            raise ValueError(f"Model response did not include a valid caption for style {style}.")
+        captions[style] = caption
+    return captions
 
-    lowered = caption.strip().lower()
-    for pattern in SPECULATION_PATTERNS:
-        if pattern.search(lowered):
-            raise ValueError("Caption contains a banned speculation phrase.")
 
-    if len(caption.split()) > MAX_CAPTION_WORDS:
-        raise ValueError("Caption exceeds the maximum allowed word count.")
-
-    if style == "humorous_tech" and _contains_unsupported_tech_claim(lowered, evidence):
-        raise ValueError("humorous_tech caption contains an unsupported coding or scripting claim.")
+def cleanup_caption(caption: str, style: str, evidence: dict[str, Any]) -> str:
+    cleaned = caption.strip()
+    cleaned = _soften_speculation_phrases(cleaned)
+    if style == "humorous_tech" and _contains_unsupported_tech_claim(cleaned.lower(), evidence):
+        cleaned = _soften_unsupported_tech_claims(cleaned)
+    cleaned = _normalize_spacing(cleaned)
+    cleaned = _trim_caption_to_max_words(cleaned, max_words=MAX_CAPTION_WORDS)
+    return cleaned or caption.strip()
 
 
 def _is_caption_candidate(payload: dict[str, Any], styles: Sequence[str]) -> bool:
@@ -492,6 +512,35 @@ def _contains_unsupported_tech_claim(caption: str, evidence: dict[str, Any]) -> 
         return False
     evidence_text = _flatten_evidence_text(evidence)
     return not any(pattern.search(evidence_text) for pattern in TECH_EVIDENCE_PATTERNS)
+
+
+def _soften_speculation_phrases(caption: str) -> str:
+    softened = caption
+    for pattern, replacement in SOFT_SPECULATION_REPLACEMENTS:
+        softened = pattern.sub(replacement, softened)
+    return softened
+
+
+def _soften_unsupported_tech_claims(caption: str) -> str:
+    softened = caption
+    for pattern, replacement in SOFT_TECH_REPLACEMENTS:
+        softened = pattern.sub(replacement, softened)
+    return softened
+
+
+def _normalize_spacing(caption: str) -> str:
+    normalized = re.sub(r"\s+([,.;:!?])", r"\1", caption)
+    normalized = re.sub(r"\(\s+", "(", normalized)
+    normalized = re.sub(r"\s+\)", ")", normalized)
+    normalized = re.sub(r"\s{2,}", " ", normalized)
+    return normalized.strip()
+
+
+def _trim_caption_to_max_words(caption: str, *, max_words: int) -> str:
+    words = caption.split()
+    if len(words) <= max_words:
+        return caption
+    return " ".join(words[:max_words]).strip()
 
 
 def _flatten_evidence_text(evidence: Mapping[str, Any]) -> str:
