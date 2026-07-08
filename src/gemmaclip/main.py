@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from gemmaclip.captioner import build_fallback_captions, generate_captions
 from gemmaclip.download import download_video
 from gemmaclip.frames import export_debug_artifacts, extract_uniform_frames
 from gemmaclip.io import Task, make_frame_manifest_entry, read_tasks, write_frame_manifest, write_results
@@ -29,7 +30,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         frame_manifest: list[dict[str, Any]] = []
         results = []
         for task in tasks:
-            result, manifest_entry = process_task(task, workdir=workdir, debug_dir=debug_dir)
+            result, manifest_entry = process_task(
+                task,
+                workdir=workdir,
+                debug_dir=debug_dir,
+                dry_run=args.dry_run,
+            )
             results.append(result)
             if manifest_entry is not None:
                 frame_manifest.append(manifest_entry)
@@ -53,6 +59,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="",
         help="Optional directory for copied frame artifacts and per-task contact sheets.",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Use placeholder captions and skip all Gemma API calls.",
+    )
     return parser.parse_args(argv)
 
 
@@ -64,6 +75,7 @@ def process_task(
     task: Task,
     workdir: Path,
     debug_dir: Path | None = None,
+    dry_run: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
         video_path = download_video(task, destination_dir=workdir / "videos")
@@ -84,7 +96,7 @@ def process_task(
             metadata.frame_count if metadata.frame_count is not None else "unknown",
             len(extracted_frames),
         )
-        captions = build_placeholder_captions(task.styles)
+        captions = generate_captions(task, extracted_frames, dry_run=dry_run, logger=LOGGER)
     except Exception as exc:
         LOGGER.warning("Task %s failed, writing fallback captions: %s", task.task_id, exc)
         captions = build_fallback_captions(task.styles)
@@ -97,42 +109,6 @@ def process_task(
         },
         manifest_entry,
     )
-
-
-def build_placeholder_captions(styles: Sequence[str]) -> dict[str, str]:
-    templates = {
-        "formal": (
-            "A short video clip is available, and a fuller caption will be generated after the visual analysis stage is enabled."
-        ),
-        "sarcastic": (
-            "A short video clip arrives, politely expecting interpretation before the interesting captioning logic has actually shown up."
-        ),
-        "humorous_tech": (
-            "A short video clip is standing by while the pipeline waits for its real captioning upgrade instead of placeholder mode."
-        ),
-        "humorous_non_tech": (
-            "A short video clip shows up, and the caption is still warming up like a comedian before the first joke."
-        ),
-    }
-    return {style: templates[style] for style in styles}
-
-
-def build_fallback_captions(styles: Sequence[str]) -> dict[str, str]:
-    templates = {
-        "formal": (
-            "The video could not be fully processed, so this placeholder caption notes a short scene with visible activity."
-        ),
-        "sarcastic": (
-            "The video resisted a full analysis, which is a very efficient way to remain slightly mysterious."
-        ),
-        "humorous_tech": (
-            "The clip hit a processing snag, so the captioning stack returned a graceful fallback instead of a dramatic crash."
-        ),
-        "humorous_non_tech": (
-            "The video kept some secrets, so this caption politely fills in while the details stay offstage."
-        ),
-    }
-    return {style: templates[style] for style in styles}
 
 
 if __name__ == "__main__":

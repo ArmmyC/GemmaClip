@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+import base64
+from collections.abc import Callable, Mapping, Sequence
+import logging
+from pathlib import Path
+from typing import Any
+
+from gemmaclip.frames import ExtractedFrame
+from gemmaclip.gemma_client import GemmaClient, GemmaConfig, load_gemma_config
+from gemmaclip.io import Task
+from gemmaclip.prompts import (
+    EVIDENCE_SCHEMA,
+    build_caption_system_prompt,
+    build_caption_user_prompt,
+    build_evidence_system_prompt,
+    build_evidence_user_prompt,
+)
+
+LOGGER = logging.getLogger("gemmaclip.captioner")
+MAX_GEMMA_FRAMES = 12
+
+
+def generate_captions(
+    task: Task,
+    frames: Sequence[ExtractedFrame],
+    *,
+    dry_run: bool = False,
+    env: Mapping[str, str] | None = None,
+    logger: logging.Logger | None = None,
+    client_factory: Callable[[GemmaConfig], GemmaClient] = GemmaClient,
+) -> dict[str, str]:
+    active_logger = logger or LOGGER
+
+    if dry_run:
+        active_logger.info("Task %s running in dry-run mode; using placeholder captions.", task.task_id)
+        return build_placeholder_captions(task.styles)
+
+    config = load_gemma_config(env)
+    if config is None:
+        active_logger.warning(
+            "Task %s missing API credentials or GEMMA_MODEL; using placeholder captions.",
+            task.task_id,
+        )
+        return build_placeholder_captions(task.styles)
+
+    try:
+        selected_frames = list(frames[:MAX_GEMMA_FRAMES])
+        evidence_messages = build_evidence_messages(task.task_id, selected_frames)
+        client = client_factory(config)
+        evidence = normalize_evidence(
+            client.chat_completion_json(
+                evidence_messages,
+                temperature=0.1,
+            )
+        )
+        caption_messages = build_caption_messages(task.task_id, task.styles, evidence)
+        captions = normalize_captions(
+            client.chat_completion_json(
+                caption_messages,
+                temperature=0.7,
+            ),
+            task.styles,
+        )
+        return captions
+    except Exception as exc:
+        active_logger.warning("Task %s failed during Gemma captioning, using fallback captions: %s", task.task_id, exc)
+        return build_fallback_captions(task.styles)
+
+
+def build_placeholder_captions(styles: Sequence[str]) -> dict[str, str]:
+    templates = {
+        "formal": (
+            "A short video clip is available, and a fuller caption will be generated after the visual analysis stage is enabled."
+        ),
+        "sarcastic": (
+            "A short video clip arrives, politely expecting interpretation before the interesting captioning logic has actually shown up."
+        ),
+        "humorous_tech": (
+            "A short video clip is standing by while the pipeline waits for its real captioning upgrade instead of placeholder mode."
+        ),
+        "humorous_non_tech": (
+            "A short video clip shows up, and the caption is still warming up like a comedian before the first joke."
+        ),
+    }
+    return {style: templates[style] for style in styles}
+
+
+def build_fallback_captions(styles: Sequence[str]) -> dict[str, str]:
+    templates = {
+        "formal": (
+            "The video could not be fully processed, so this placeholder caption notes a short scene with visible activity."
+        ),
+        "sarcastic": (
+            "The video resisted a full analysis, which is a very efficient way to remain slightly mysterious."
+        ),
+        "humorous_tech": (
+            "The clip hit a processing snag, so the captioning stack returned a graceful fallback instead of a dramatic crash."
+        ),
+        "humorous_non_tech": (
+            "The video kept some secrets, so this caption politely fills in while the details stay offstage."
+        ),
+    }
+    return {style: templates[style] for style in styles}
+
+
+def build_evidence_messages(task_id: str, frames: Sequence[ExtractedFrame]) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = [{"type": "text", "text": build_evidence_user_prompt(task_id, frames)}]
+    for frame in frames:
+        content.append(
+            {
+                "type": "text",
+                "text": f"Frame {frame.path.name} at timestamp_seconds={frame.timestamp_seconds:.3f}",
+            }
+        )
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": make_jpeg_data_url(frame.path),
+                },
+            }
+        )
+
+    return [
+        {"role": "system", "content": build_evidence_system_prompt()},
+        {"role": "user", "content": content},
+    ]
+
+
+def build_caption_messages(
+    task_id: str,
+    styles: Sequence[str],
+    evidence: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        {"role": "system", "content": build_caption_system_prompt()},
+        {"role": "user", "content": build_caption_user_prompt(task_id, styles, evidence)},
+    ]
+
+
+def make_jpeg_data_url(image_path: str | Path) -> str:
+    payload = Path(image_path).read_bytes()
+    encoded = base64.b64encode(payload).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def normalize_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for key, default in EVIDENCE_SCHEMA.items():
+        value = payload.get(key, default)
+        if isinstance(default, list):
+            if not isinstance(value, list):
+                value = []
+            normalized[key] = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            normalized[key] = str(value).strip() if value is not None else ""
+    return normalized
+
+
+def normalize_captions(payload: dict[str, Any], styles: Sequence[str]) -> dict[str, str]:
+    captions: dict[str, str] = {}
+    for style in styles:
+        value = payload.get(style)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Model response did not include a valid caption for style {style}.")
+        captions[style] = value.strip()
+    return captions
