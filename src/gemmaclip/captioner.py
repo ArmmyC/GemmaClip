@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable, Mapping, Sequence
+from io import BytesIO
 import logging
 from pathlib import Path
 from typing import Any
@@ -45,7 +46,7 @@ def generate_captions(
         return build_placeholder_captions(task.styles)
 
     try:
-        selected_frames = list(frames[:MAX_GEMMA_FRAMES])
+        selected_frames = select_gemma_frames(frames, max_frames=MAX_GEMMA_FRAMES)
         evidence_messages = build_evidence_messages(task.task_id, selected_frames)
         client = client_factory(config)
         evidence = normalize_evidence(
@@ -104,6 +105,22 @@ def build_fallback_captions(styles: Sequence[str]) -> dict[str, str]:
     return {style: templates[style] for style in styles}
 
 
+def select_gemma_frames(
+    frames: Sequence[ExtractedFrame],
+    max_frames: int = MAX_GEMMA_FRAMES,
+) -> list[ExtractedFrame]:
+    ordered_frames = list(frames)
+    if len(ordered_frames) <= max_frames:
+        return ordered_frames
+
+    last_index = len(ordered_frames) - 1
+    selected: list[ExtractedFrame] = []
+    for slot in range(max_frames):
+        index = (slot * last_index) // (max_frames - 1)
+        selected.append(ordered_frames[index])
+    return selected
+
+
 def build_evidence_messages(task_id: str, frames: Sequence[ExtractedFrame]) -> list[dict[str, Any]]:
     content: list[dict[str, Any]] = [{"type": "text", "text": build_evidence_user_prompt(task_id, frames)}]
     for frame in frames:
@@ -140,9 +157,26 @@ def build_caption_messages(
 
 
 def make_jpeg_data_url(image_path: str | Path) -> str:
-    payload = Path(image_path).read_bytes()
+    payload = make_resized_jpeg_bytes(image_path)
     encoded = base64.b64encode(payload).decode("ascii")
     return f"data:image/jpeg;base64,{encoded}"
+
+
+def make_resized_jpeg_bytes(
+    image_path: str | Path,
+    max_side: int = 768,
+    quality: int = 85,
+) -> bytes:
+    if max_side <= 0:
+        raise ValueError("max_side must be positive.")
+
+    Image = _load_pillow_image()
+    output = BytesIO()
+    with Image.open(image_path) as image:
+        converted = image.convert("RGB")
+        converted.thumbnail((max_side, max_side))
+        converted.save(output, format="JPEG", quality=quality, optimize=True)
+    return output.getvalue()
 
 
 def normalize_evidence(payload: dict[str, Any]) -> dict[str, Any]:
@@ -166,3 +200,12 @@ def normalize_captions(payload: dict[str, Any], styles: Sequence[str]) -> dict[s
             raise ValueError(f"Model response did not include a valid caption for style {style}.")
         captions[style] = value.strip()
     return captions
+
+
+def _load_pillow_image():
+    try:
+        from PIL import Image
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Pillow is required for Gemma image payload resizing.") from exc
+
+    return Image

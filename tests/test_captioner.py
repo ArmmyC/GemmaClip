@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from io import BytesIO
+
 from gemmaclip.captioner import (
     build_fallback_captions,
     build_placeholder_captions,
     generate_captions,
+    make_resized_jpeg_bytes,
+    select_gemma_frames,
 )
 from gemmaclip.frames import ExtractedFrame
 from gemmaclip.gemma_client import DEFAULT_FIREWORKS_BASE_URL, extract_message_text, load_gemma_config, parse_json_object
@@ -22,6 +26,15 @@ def make_frames(tmp_path) -> list[ExtractedFrame]:
     frame_path = tmp_path / "frame_001.jpg"
     frame_path.write_bytes(b"jpeg-bytes")
     return [ExtractedFrame(path=frame_path, timestamp_seconds=0.25)]
+
+
+def make_frame_sequence(tmp_path, count: int) -> list[ExtractedFrame]:
+    frames: list[ExtractedFrame] = []
+    for index in range(count):
+        frame_path = tmp_path / f"frame_{index + 1:03d}.jpg"
+        frame_path.write_bytes(f"jpeg-{index}".encode("ascii"))
+        frames.append(ExtractedFrame(path=frame_path, timestamp_seconds=float(index)))
+    return frames
 
 
 def test_parse_json_object_extracts_wrapped_json():
@@ -51,6 +64,41 @@ def test_extract_message_text_supports_content_parts():
     assert text == '{"scene":"garden"}'
 
 
+def test_select_gemma_frames_returns_all_frames_when_count_is_within_limit(tmp_path):
+    frames = make_frame_sequence(tmp_path, 5)
+
+    selected = select_gemma_frames(frames, max_frames=12)
+
+    assert selected == frames
+
+
+def test_select_gemma_frames_returns_exactly_max_frames_when_input_is_larger(tmp_path):
+    frames = make_frame_sequence(tmp_path, 20)
+
+    selected = select_gemma_frames(frames, max_frames=12)
+
+    assert len(selected) == 12
+
+
+def test_select_gemma_frames_includes_first_and_last_frames(tmp_path):
+    frames = make_frame_sequence(tmp_path, 20)
+
+    selected = select_gemma_frames(frames, max_frames=12)
+
+    assert selected[0] == frames[0]
+    assert selected[-1] == frames[-1]
+
+
+def test_select_gemma_frames_preserves_chronological_order(tmp_path):
+    frames = make_frame_sequence(tmp_path, 20)
+
+    selected = select_gemma_frames(frames, max_frames=12)
+
+    assert [frame.timestamp_seconds for frame in selected] == sorted(
+        frame.timestamp_seconds for frame in selected
+    )
+
+
 def test_load_gemma_config_uses_fireworks_fallbacks():
     config = load_gemma_config(
         {
@@ -63,6 +111,18 @@ def test_load_gemma_config_uses_fireworks_fallbacks():
     assert config.api_key == "fireworks-key"
     assert config.base_url == DEFAULT_FIREWORKS_BASE_URL
     assert config.model == "accounts/fireworks/models/custom-model"
+
+
+def test_make_resized_jpeg_bytes_limits_max_side(tmp_path):
+    from PIL import Image
+
+    image_path = tmp_path / "large.jpg"
+    Image.new("RGB", (2000, 1000), color="red").save(image_path, format="JPEG", quality=95)
+
+    resized_bytes = make_resized_jpeg_bytes(image_path, max_side=768, quality=85)
+
+    with Image.open(BytesIO(resized_bytes)) as resized_image:
+        assert max(resized_image.size) <= 768
 
 
 def test_load_gemma_config_prefers_gemma_values_over_fireworks_fallbacks():
