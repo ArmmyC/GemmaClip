@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+from math import ceil, sqrt
 from pathlib import Path
+import shutil
 
 from gemmaclip.io import safe_task_id
 from gemmaclip.video import VideoMetadata
@@ -40,6 +42,86 @@ def extract_uniform_frames(
         _extract_frame(video_file, output_path, timestamp, ffmpeg_binary=ffmpeg_binary)
         output_paths.append(output_path)
     return output_paths
+
+
+def export_debug_artifacts(
+    task_id: str,
+    frame_paths: list[Path],
+    debug_dir: str | Path,
+) -> None:
+    debug_root = Path(debug_dir)
+    debug_root.mkdir(parents=True, exist_ok=True)
+
+    task_name = safe_task_id(task_id)
+    task_debug_dir = debug_root / task_name
+    task_debug_dir.mkdir(parents=True, exist_ok=True)
+    for stale_frame in task_debug_dir.glob("*.jpg"):
+        stale_frame.unlink()
+
+    copied_frames: list[Path] = []
+    for frame_path in frame_paths:
+        destination = task_debug_dir / frame_path.name
+        shutil.copy2(frame_path, destination)
+        copied_frames.append(destination)
+
+    contact_sheet_path = debug_root / f"{task_name}_contact_sheet.jpg"
+    generate_contact_sheet(copied_frames, contact_sheet_path)
+
+
+def generate_contact_sheet(frame_paths: list[Path], output_path: str | Path) -> None:
+    if not frame_paths:
+        raise ValueError("Cannot generate a contact sheet without frames.")
+
+    Image, ImageDraw, ImageFont, ImageOps = _load_pillow()
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    thumb_width = 320
+    thumb_height = 180
+    label_height = 24
+    padding = 16
+    columns = max(1, min(4, ceil(sqrt(len(frame_paths)))))
+    rows = ceil(len(frame_paths) / columns)
+    cell_width = thumb_width
+    cell_height = thumb_height + label_height
+
+    sheet_width = padding + (columns * cell_width) + ((columns - 1) * padding) + padding
+    sheet_height = padding + (rows * cell_height) + ((rows - 1) * padding) + padding
+
+    contact_sheet = Image.new("RGB", (sheet_width, sheet_height), color="white")
+    draw = ImageDraw.Draw(contact_sheet)
+    font = ImageFont.load_default()
+
+    for index, frame_path in enumerate(frame_paths):
+        row = index // columns
+        column = index % columns
+        origin_x = padding + column * (cell_width + padding)
+        origin_y = padding + row * (cell_height + padding)
+
+        with Image.open(frame_path) as image:
+            thumbnail = ImageOps.contain(image.convert("RGB"), (thumb_width, thumb_height))
+
+        thumb_x = origin_x + (thumb_width - thumbnail.width) // 2
+        thumb_y = origin_y + (thumb_height - thumbnail.height) // 2
+        contact_sheet.paste(thumbnail, (thumb_x, thumb_y))
+
+        label = frame_path.name
+        draw.text((origin_x, origin_y + thumb_height + 4), label, fill="black", font=font)
+
+    contact_sheet.save(output, format="JPEG", quality=90)
+
+
+def _load_pillow():
+    try:
+        from PIL import Image, ImageDraw, ImageFont, ImageOps
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Pillow is required for --debug-dir contact sheets. Install dependencies with `python -m pip install -e .` "
+            "or install Pillow directly."
+        ) from exc
+
+    return Image, ImageDraw, ImageFont, ImageOps
 
 
 def _uniform_timestamps(duration_seconds: float, frame_count: int) -> list[float]:

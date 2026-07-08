@@ -9,6 +9,18 @@ python -m pip install -e .[dev]
 python -m gemmaclip.main --input examples/tasks.json --output output/results.json
 ```
 
+Frame debug artifacts:
+
+```bash
+python -m gemmaclip.main \
+  --input examples/tasks.json \
+  --output output/results.json \
+  --workdir /tmp/gemmaclip \
+  --debug-dir debug-frames
+```
+
+This stores downloaded videos under `<workdir>/videos/`, extracted frames under `<workdir>/frames/<task_id>/`, and writes `<workdir>/frame_manifest.json`. When `--debug-dir` is set, GemmaClip also copies frames into `<debug-dir>/<task_id>/` and writes `<debug-dir>/<task_id>_contact_sheet.jpg`.
+
 PowerShell venv activation:
 
 ```powershell

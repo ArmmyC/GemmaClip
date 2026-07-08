@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from gemmaclip.video import VideoMetadata
+
 SUPPORTED_STYLES = {
     "formal",
     "sarcastic",
@@ -73,6 +75,32 @@ def write_results(results: list[dict[str, Any]], output_path: str | Path) -> Non
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+
+
+def make_frame_manifest_entry(
+    task_id: str,
+    video_path: str | Path,
+    frame_paths: list[str | Path],
+    metadata: VideoMetadata,
+) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "video_path": str(Path(video_path)),
+        "frame_paths": [str(Path(frame_path)) for frame_path in frame_paths],
+        "metadata": {
+            "duration_seconds": metadata.duration_seconds,
+            "fps": metadata.fps,
+            "width": metadata.width,
+            "height": metadata.height,
+            "frame_count": metadata.frame_count,
+        },
+    }
+
+
+def write_frame_manifest(entries: list[dict[str, Any]], manifest_path: str | Path) -> None:
+    path = Path(manifest_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
 
 def safe_task_id(task_id: str) -> str:

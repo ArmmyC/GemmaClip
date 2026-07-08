@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import builtins
 
 import pytest
 
-from gemmaclip.io import read_tasks
+from gemmaclip.io import make_frame_manifest_entry, read_tasks, write_frame_manifest
+from gemmaclip.frames import generate_contact_sheet
+from gemmaclip.video import VideoMetadata
 
 
 def write_tasks_file(tmp_path, payload) -> None:
@@ -91,3 +94,60 @@ def test_read_tasks_rejects_invalid_video_url(tmp_path):
 
     with pytest.raises(ValueError, match="absolute http or https URL"):
         read_tasks(tmp_path / "tasks.json")
+
+
+def test_write_frame_manifest_writes_expected_payload(tmp_path):
+    manifest_path = tmp_path / "frame_manifest.json"
+    entry = make_frame_manifest_entry(
+        task_id="clip-1",
+        video_path=tmp_path / "videos" / "clip-1.mp4",
+        frame_paths=[
+            tmp_path / "frames" / "clip-1" / "frame_001.jpg",
+            tmp_path / "frames" / "clip-1" / "frame_002.jpg",
+        ],
+        metadata=VideoMetadata(
+            duration_seconds=42.5,
+            fps=24.0,
+            width=1920,
+            height=1080,
+            frame_count=1020,
+        ),
+    )
+
+    write_frame_manifest([entry], manifest_path)
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert payload == [
+        {
+            "task_id": "clip-1",
+            "video_path": str(tmp_path / "videos" / "clip-1.mp4"),
+            "frame_paths": [
+                str(tmp_path / "frames" / "clip-1" / "frame_001.jpg"),
+                str(tmp_path / "frames" / "clip-1" / "frame_002.jpg"),
+            ],
+            "metadata": {
+                "duration_seconds": 42.5,
+                "fps": 24.0,
+                "width": 1920,
+                "height": 1080,
+                "frame_count": 1020,
+            },
+        }
+    ]
+
+
+def test_generate_contact_sheet_reports_missing_pillow(tmp_path, monkeypatch):
+    frame_path = tmp_path / "frame_001.jpg"
+    frame_path.write_bytes(b"placeholder")
+
+    original_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "PIL":
+            raise ModuleNotFoundError("No module named 'PIL'")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(RuntimeError, match="Pillow is required for --debug-dir contact sheets"):
+        generate_contact_sheet([frame_path], tmp_path / "contact_sheet.jpg")

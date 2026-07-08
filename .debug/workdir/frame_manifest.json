@@ -1,0 +1,77 @@
+[
+  {
+    "task_id": "v1",
+    "video_path": "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\videos\\v1.mp4",
+    "frame_paths": [
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_001.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_002.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_003.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_004.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_005.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_006.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_007.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_008.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_009.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_010.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_011.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v1\\frame_012.jpg"
+    ],
+    "metadata": {
+      "duration_seconds": 6.0,
+      "fps": 25.0,
+      "width": 2560,
+      "height": 1440,
+      "frame_count": 150
+    }
+  },
+  {
+    "task_id": "v2",
+    "video_path": "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\videos\\v2.mp4",
+    "frame_paths": [
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_001.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_002.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_003.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_004.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_005.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_006.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_007.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_008.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_009.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_010.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_011.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v2\\frame_012.jpg"
+    ],
+    "metadata": {
+      "duration_seconds": 12.366667,
+      "fps": 30.0,
+      "width": 2560,
+      "height": 1440,
+      "frame_count": 371
+    }
+  },
+  {
+    "task_id": "v3",
+    "video_path": "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\videos\\v3.mp4",
+    "frame_paths": [
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_001.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_002.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_003.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_004.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_005.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_006.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_007.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_008.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_009.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_010.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_011.jpg",
+      "C:\\Users\\armmy-notebook\\Desktop\\ArmmyWorkspace\\GemmaClip\\.debug\\workdir\\frames\\v3\\frame_012.jpg"
+    ],
+    "metadata": {
+      "duration_seconds": 18.25,
+      "fps": 24.0,
+      "width": 3840,
+      "height": 2160,
+      "frame_count": 438
+    }
+  }
+]

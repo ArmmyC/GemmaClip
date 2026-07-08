@@ -3,16 +3,18 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from gemmaclip.download import download_video
-from gemmaclip.frames import extract_uniform_frames
-from gemmaclip.io import Task, read_tasks, write_results
+from gemmaclip.frames import export_debug_artifacts, extract_uniform_frames
+from gemmaclip.io import Task, make_frame_manifest_entry, read_tasks, write_frame_manifest, write_results
 from gemmaclip.validate import validate_results
 from gemmaclip.video import probe_video
 
 DEFAULT_INPUT_PATH = "/input/tasks.json"
 DEFAULT_OUTPUT_PATH = "/output/results.json"
+DEFAULT_WORKDIR = "/tmp/gemmaclip"
 
 LOGGER = logging.getLogger("gemmaclip")
 
@@ -22,7 +24,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         tasks = read_tasks(args.input)
-        results = [process_task(task) for task in tasks]
+        workdir = Path(args.workdir).resolve()
+        debug_dir = Path(args.debug_dir).resolve() if args.debug_dir else None
+        frame_manifest: list[dict[str, Any]] = []
+        results = []
+        for task in tasks:
+            result, manifest_entry = process_task(task, workdir=workdir, debug_dir=debug_dir)
+            results.append(result)
+            if manifest_entry is not None:
+                frame_manifest.append(manifest_entry)
+
+        write_frame_manifest(frame_manifest, workdir / "frame_manifest.json")
         validate_results(tasks, results)
         write_results(results, args.output)
     except Exception as exc:
@@ -35,6 +47,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GemmaClip Track 2 baseline pipeline")
     parser.add_argument("--input", default=DEFAULT_INPUT_PATH, help="Path to the input tasks JSON file.")
     parser.add_argument("--output", default=DEFAULT_OUTPUT_PATH, help="Path to the output results JSON file.")
+    parser.add_argument("--workdir", default=DEFAULT_WORKDIR, help="Working directory for downloaded videos and extracted frames.")
+    parser.add_argument(
+        "--debug-dir",
+        default="",
+        help="Optional directory for copied frame artifacts and per-task contact sheets.",
+    )
     return parser.parse_args(argv)
 
 
@@ -42,11 +60,23 @@ def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 
-def process_task(task: Task) -> dict[str, Any]:
+def process_task(
+    task: Task,
+    workdir: Path,
+    debug_dir: Path | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
-        video_path = download_video(task)
+        video_path = download_video(task, destination_dir=workdir / "videos")
         metadata = probe_video(video_path)
-        extracted_frames = extract_uniform_frames(task.task_id, video_path, metadata)
+        extracted_frames = extract_uniform_frames(
+            task.task_id,
+            video_path,
+            metadata,
+            destination_root=workdir / "frames",
+        )
+        manifest_entry = make_frame_manifest_entry(task.task_id, video_path, extracted_frames, metadata)
+        if debug_dir is not None:
+            export_debug_artifacts(task.task_id, extracted_frames, debug_dir)
         LOGGER.info(
             "Processed task %s: duration=%.2fs frames=%s extracted=%s",
             task.task_id,
@@ -58,11 +88,15 @@ def process_task(task: Task) -> dict[str, Any]:
     except Exception as exc:
         LOGGER.warning("Task %s failed, writing fallback captions: %s", task.task_id, exc)
         captions = build_fallback_captions(task.styles)
+        manifest_entry = None
 
-    return {
-        "task_id": task.task_id,
-        "captions": captions,
-    }
+    return (
+        {
+            "task_id": task.task_id,
+            "captions": captions,
+        },
+        manifest_entry,
+    )
 
 
 def build_placeholder_captions(styles: Sequence[str]) -> dict[str, str]:
