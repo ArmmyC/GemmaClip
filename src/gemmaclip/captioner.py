@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable, Mapping, Sequence
-from io import BytesIO
 import json
 import logging
 import os
-from pathlib import Path
 import re
+from collections.abc import Callable, Mapping, Sequence
+from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 from gemmaclip.frames import ExtractedFrame
-from gemmaclip.gemma_client import GemmaClient, GemmaConfig, load_gemma_config
+from gemmaclip.gemma_client import GemmaClient, GemmaConfig, GemmaModelConfig, extract_json_objects, load_gemma_config
 from gemmaclip.io import Task, safe_task_id
 from gemmaclip.prompts import (
     EVIDENCE_SCHEMA,
@@ -71,7 +71,7 @@ def generate_captions(
     debug_dir: str | Path | None = None,
     env: Mapping[str, str] | None = None,
     logger: logging.Logger | None = None,
-    client_factory: Callable[[GemmaConfig], GemmaClient] = GemmaClient,
+    client_factory: Callable[[GemmaModelConfig], GemmaClient] = GemmaClient,
 ) -> dict[str, str]:
     active_logger = logger or LOGGER
 
@@ -90,22 +90,15 @@ def generate_captions(
 
     try:
         selected_frames = select_gemma_frames(frames, max_frames=MAX_GEMMA_FRAMES)
-        evidence_messages = build_evidence_messages(task.task_id, selected_frames)
-        client = client_factory(config)
-        evidence = normalize_evidence(
-            client.chat_completion_json(
-                evidence_messages,
-                temperature=0.1,
-            )
-        )
+        vision_client = client_factory(config.vision_model_config())
+        text_client = client_factory(config.text_model_config())
+        evidence = generate_evidence(task.task_id, selected_frames, vision_client)
         if debug_dir is not None:
             write_evidence_debug_file(task.task_id, selected_frames, evidence, debug_dir)
         caption_messages = build_caption_messages(task.task_id, task.styles, evidence)
+        caption_text = request_model_text(text_client, caption_messages, temperature=0.7)
         captions = normalize_captions(
-            client.chat_completion_json(
-                caption_messages,
-                temperature=0.7,
-            ),
+            extract_caption_json(caption_text, task.styles),
             task.styles,
             evidence,
         )
@@ -115,7 +108,7 @@ def generate_captions(
             task,
             captions,
             evidence,
-            client,
+            text_client,
             values,
             debug_dir=debug_dir,
         )
@@ -305,6 +298,67 @@ def make_resized_jpeg_bytes(
     return output.getvalue()
 
 
+def generate_evidence(
+    task_id: str,
+    frames: Sequence[ExtractedFrame],
+    client: GemmaClient,
+) -> dict[str, Any]:
+    evidence_messages = build_evidence_messages(task_id, frames)
+    last_text = ""
+    last_error: Exception | None = None
+
+    for _ in range(2):
+        last_text = request_model_text(
+            client,
+            evidence_messages,
+            temperature=0.1,
+            use_response_format=False,
+        )
+        try:
+            return extract_evidence_json(last_text)
+        except ValueError as exc:
+            last_error = exc
+
+    fallback_evidence = build_plain_text_evidence(last_text)
+    if fallback_evidence is not None:
+        return fallback_evidence
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError("Evidence generation did not produce usable output.")
+
+
+def request_model_text(
+    client: GemmaClient,
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    temperature: float,
+    use_response_format: bool | None = None,
+) -> str:
+    if hasattr(client, "chat_completion_text"):
+        try:
+            return client.chat_completion_text(
+                messages,
+                temperature,
+                use_response_format=use_response_format,
+            )
+        except TypeError:
+            return client.chat_completion_text(messages, temperature)
+
+    if hasattr(client, "chat_completion_json"):
+        try:
+            payload = client.chat_completion_json(
+                messages,
+                temperature,
+                use_response_format=use_response_format,
+            )
+        except TypeError:
+            payload = client.chat_completion_json(messages, temperature)
+        return json.dumps(payload)
+
+    raise TypeError("Client does not support text or JSON chat completion methods.")
+
+
 def normalize_evidence(payload: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for key, default in EVIDENCE_SCHEMA.items():
@@ -316,6 +370,28 @@ def normalize_evidence(payload: dict[str, Any]) -> dict[str, Any]:
         else:
             normalized[key] = str(value).strip() if value is not None else ""
     return normalized
+
+
+def extract_evidence_json(text: str) -> dict[str, Any]:
+    valid_candidates: list[dict[str, Any]] = []
+    for candidate in extract_json_objects(text):
+        if not _is_evidence_candidate(candidate):
+            continue
+        normalized = normalize_evidence(candidate)
+        if _has_useful_evidence(normalized):
+            valid_candidates.append(normalized)
+    if not valid_candidates:
+        raise ValueError("Could not extract a useful evidence JSON object from the model response.")
+    return valid_candidates[-1]
+
+
+def build_plain_text_evidence(text: str) -> dict[str, Any] | None:
+    cleaned = _clean_plain_text(text)
+    if not cleaned or cleaned == "{}":
+        return None
+
+    evidence = normalize_evidence({"scene": cleaned})
+    return evidence if _has_useful_evidence(evidence) else None
 
 
 def normalize_captions(
@@ -334,6 +410,16 @@ def normalize_captions(
     return captions
 
 
+def extract_caption_json(text: str, styles: Sequence[str]) -> dict[str, Any]:
+    valid_candidates: list[dict[str, Any]] = []
+    for candidate in extract_json_objects(text):
+        if _is_caption_candidate(candidate, styles):
+            valid_candidates.append(candidate)
+    if not valid_candidates:
+        raise ValueError("Could not extract a valid caption JSON object from the model response.")
+    return valid_candidates[-1]
+
+
 def maybe_verify_captions(
     task: Task,
     captions: dict[str, str],
@@ -348,7 +434,8 @@ def maybe_verify_captions(
 
     try:
         verifier_messages = build_verifier_messages(task.task_id, task.styles, evidence, captions)
-        verified_payload = client.chat_completion_json(verifier_messages, temperature=0.2)
+        verifier_text = request_model_text(client, verifier_messages, temperature=0.2)
+        verified_payload = extract_caption_json(verifier_text, task.styles)
         verified_captions = normalize_captions(verified_payload, task.styles, evidence)
     except Exception:
         return captions
@@ -370,6 +457,34 @@ def validate_caption(caption: str, style: str, evidence: dict[str, Any]) -> None
 
     if style == "humorous_tech" and _contains_unsupported_tech_claim(lowered, evidence):
         raise ValueError("humorous_tech caption contains an unsupported coding or scripting claim.")
+
+
+def _is_caption_candidate(payload: dict[str, Any], styles: Sequence[str]) -> bool:
+    for style in styles:
+        value = payload.get(style)
+        if not isinstance(value, str) or not value.strip():
+            return False
+    return True
+
+
+def _is_evidence_candidate(payload: dict[str, Any]) -> bool:
+    return any(key in EVIDENCE_SCHEMA for key in payload)
+
+
+def _has_useful_evidence(evidence: Mapping[str, Any]) -> bool:
+    for value in evidence.values():
+        if isinstance(value, list):
+            if any(str(item).strip() for item in value):
+                return True
+            continue
+        if str(value).strip():
+            return True
+    return False
+
+
+def _clean_plain_text(text: str) -> str:
+    cleaned = text.replace("```json", "").replace("```", "")
+    return " ".join(cleaned.split()).strip()
 
 
 def _contains_unsupported_tech_claim(caption: str, evidence: dict[str, Any]) -> bool:

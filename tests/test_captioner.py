@@ -9,6 +9,8 @@ from gemmaclip.captioner import (
     build_fallback_captions,
     build_placeholder_captions,
     build_verifier_messages,
+    extract_caption_json,
+    extract_evidence_json,
     generate_captions,
     make_resized_jpeg_bytes,
     maybe_verify_captions,
@@ -20,10 +22,13 @@ from gemmaclip.gemma_client import (
     DEFAULT_FALLBACK_MODELS,
     DEFAULT_FIREWORKS_BASE_URL,
     DEFAULT_GEMMA_MODEL,
+    DEFAULT_GEMMA_TEXT_MODEL,
+    DEFAULT_GEMMA_VISION_MODEL,
     DEFAULT_GEMMA_MAX_TOKENS,
     DEFAULT_TOP_K,
     GemmaClient,
     GemmaConfig,
+    GemmaModelConfig,
     build_chat_completion_payload,
     extract_message_text,
     load_gemma_config,
@@ -79,6 +84,15 @@ def test_parse_json_object_extracts_wrapped_json():
         "scene": "office",
         "actions": ["typing"],
     }
+
+
+def test_parse_json_object_rejects_empty_object():
+    try:
+        parse_json_object("{}")
+    except ValueError as exc:
+        assert "non-empty JSON object" in str(exc)
+    else:
+        raise AssertionError("Expected parse_json_object to reject empty objects.")
 
 
 def test_extract_message_text_supports_content_parts():
@@ -163,13 +177,14 @@ def test_load_gemma_config_uses_fireworks_fallbacks():
     assert config is not None
     assert config.api_key == "fireworks-key"
     assert config.base_url == DEFAULT_FIREWORKS_BASE_URL
-    assert config.model == DEFAULT_GEMMA_MODEL
+    assert config.vision_model == DEFAULT_GEMMA_VISION_MODEL
+    assert config.text_model == DEFAULT_GEMMA_TEXT_MODEL
     assert config.fallback_models == DEFAULT_FALLBACK_MODELS
     assert config.max_tokens == DEFAULT_GEMMA_MAX_TOKENS
     assert config.use_response_format is False
 
 
-def test_load_gemma_config_uses_gemma_model_override():
+def test_load_gemma_config_uses_gemma_model_override_for_both_roles():
     config = load_gemma_config(
         {
             "FIREWORKS_API_KEY": "fireworks-key",
@@ -178,7 +193,8 @@ def test_load_gemma_config_uses_gemma_model_override():
     )
 
     assert config is not None
-    assert config.model == "accounts/fireworks/models/custom-model"
+    assert config.vision_model == "accounts/fireworks/models/custom-model"
+    assert config.text_model == "accounts/fireworks/models/custom-model"
 
 
 def test_load_gemma_config_parses_fallback_model_list():
@@ -209,7 +225,7 @@ def test_make_resized_jpeg_bytes_limits_max_side(tmp_path):
 
 
 def test_build_chat_completion_payload_matches_fireworks_defaults():
-    config = GemmaConfig(
+    config = GemmaModelConfig(
         api_key="key",
         base_url=DEFAULT_FIREWORKS_BASE_URL,
         model="accounts/fireworks/models/custom-model",
@@ -230,7 +246,7 @@ def test_build_chat_completion_payload_matches_fireworks_defaults():
 
 
 def test_build_chat_completion_payload_includes_response_format_when_enabled():
-    config = GemmaConfig(
+    config = GemmaModelConfig(
         api_key="key",
         base_url=DEFAULT_FIREWORKS_BASE_URL,
         model="accounts/123/deployments/456",
@@ -272,7 +288,22 @@ def test_load_gemma_config_prefers_gemma_values_over_fireworks_fallbacks():
     assert config is not None
     assert config.api_key == "gemma-key"
     assert config.base_url == "https://example.com/custom/v1"
-    assert config.model == "accounts/123/deployments/456"
+    assert config.vision_model == "accounts/123/deployments/456"
+    assert config.text_model == "accounts/123/deployments/456"
+
+
+def test_load_gemma_config_uses_split_vision_and_text_models():
+    config = load_gemma_config(
+        {
+            "FIREWORKS_API_KEY": "fireworks-key",
+            "GEMMA_VISION_MODEL": "accounts/fireworks/models/vision-model",
+            "GEMMA_TEXT_MODEL": "accounts/fireworks/models/text-model",
+        }
+    )
+
+    assert config is not None
+    assert config.vision_model == "accounts/fireworks/models/vision-model"
+    assert config.text_model == "accounts/fireworks/models/text-model"
 
 
 def test_load_gemma_config_returns_none_without_any_api_key():
@@ -301,7 +332,7 @@ def test_gemma_client_falls_back_when_primary_model_is_unavailable():
 
     http_client = RecordingHttpClient()
     client = GemmaClient(
-        GemmaConfig(
+        GemmaModelConfig(
             api_key="key",
             base_url=DEFAULT_FIREWORKS_BASE_URL,
             model="primary-model",
@@ -338,7 +369,7 @@ def test_gemma_client_caches_first_working_model_after_fallback():
 
     http_client = RecordingHttpClient()
     client = GemmaClient(
-        GemmaConfig(
+        GemmaModelConfig(
             api_key="key",
             base_url=DEFAULT_FIREWORKS_BASE_URL,
             model="primary-model",
@@ -467,6 +498,86 @@ def test_verifier_output_is_validated():
     assert captions == original
 
 
+def test_invalid_verifier_output_empty_object_keeps_original_captions():
+    class InvalidVerifierClient:
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            return "{}"
+
+    original = {
+        "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+        "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+    }
+
+    captions = maybe_verify_captions(
+        make_task(),
+        original,
+        make_evidence(),
+        InvalidVerifierClient(),
+        {},
+    )
+
+    assert captions == original
+
+
+def test_extract_caption_json_prefers_final_caption_object_after_thinking_process():
+    text = """
+Thinking Process:
+{"scene":"office","actions":["typing"]}
+More analysis here.
+{"formal":"A worker stands near a desk in a quiet office during a routine moment.","sarcastic":"A worker performs thrilling office stillness at an admirably ordinary pace today."}
+"""
+
+    payload = extract_caption_json(text, ("formal", "sarcastic"))
+
+    assert payload == {
+        "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+        "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+    }
+
+
+def test_extract_caption_json_ignores_evidence_json_when_style_keys_are_required():
+    text = """
+{"scene":"office","main_subjects":["person"],"actions":["typing"]}
+{"formal":"A worker stands near a desk in a quiet office during a routine moment.","sarcastic":"A worker performs thrilling office stillness at an admirably ordinary pace today."}
+"""
+
+    payload = extract_caption_json(text, ("formal", "sarcastic"))
+
+    assert "formal" in payload
+    assert "scene" not in payload
+
+
+def test_extract_evidence_json_rejects_empty_object():
+    try:
+        extract_evidence_json("{}")
+    except ValueError as exc:
+        assert "useful evidence JSON object" in str(exc)
+    else:
+        raise AssertionError("Expected extract_evidence_json to reject empty evidence objects.")
+
+
+def test_extract_evidence_json_parses_qwen_style_fenced_json():
+    text = """
+```json
+{
+  "scene": "office scene",
+  "main_subjects": ["person"],
+  "actions": ["working"],
+  "setting": "office",
+  "visible_objects": ["desk"],
+  "mood": "neutral",
+  "camera_notes": "static shot",
+  "uncertain_details": []
+}
+```
+"""
+
+    payload = extract_evidence_json(text)
+
+    assert payload["scene"] == "office scene"
+    assert payload["main_subjects"] == ["person"]
+
+
 def test_build_verifier_messages_includes_task_evidence_and_captions():
     messages = build_verifier_messages(
         "clip-1",
@@ -486,11 +597,11 @@ def test_build_verifier_messages_includes_task_evidence_and_captions():
 def test_generate_captions_writes_debug_caption_files(tmp_path):
     class FakeClient:
         def __init__(self, _config):
-            self.calls = 0
+            pass
 
         def chat_completion_json(self, messages, temperature):
-            self.calls += 1
-            if self.calls == 1:
+            system_prompt = messages[0]["content"]
+            if "factual video analyst" in system_prompt:
                 return {
                     "scene": "office",
                     "main_subjects": ["worker"],
@@ -501,7 +612,7 @@ def test_generate_captions_writes_debug_caption_files(tmp_path):
                     "camera_notes": "static shot",
                     "uncertain_details": [],
                 }
-            if self.calls == 2:
+            if "caption writer" in system_prompt:
                 return {
                     "formal": "A worker stands near a desk in a quiet office during a routine moment.",
                     "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
@@ -542,11 +653,11 @@ def test_generate_captions_uses_placeholder_when_config_missing(tmp_path):
 def test_generate_captions_falls_back_when_model_output_is_invalid(tmp_path):
     class FakeClient:
         def __init__(self, _config):
-            self.calls = 0
+            pass
 
         def chat_completion_json(self, messages, temperature):
-            self.calls += 1
-            if self.calls == 1:
+            system_prompt = messages[0]["content"]
+            if "factual video analyst" in system_prompt:
                 return {
                     "scene": "office",
                     "main_subjects": ["worker"],

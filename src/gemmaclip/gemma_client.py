@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 import logging
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -11,6 +11,8 @@ import httpx
 
 DEFAULT_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
 DEFAULT_GEMMA_MODEL = "accounts/fireworks/models/gemma-4-31b-it"
+DEFAULT_GEMMA_VISION_MODEL = "accounts/fireworks/models/qwen3p7-plus"
+DEFAULT_GEMMA_TEXT_MODEL = "accounts/fireworks/models/deepseek-v4-pro"
 DEFAULT_FALLBACK_MODELS = ("accounts/fireworks/models/kimi-k2p6",)
 DEFAULT_GEMMA_MAX_TOKENS = 2048
 DEFAULT_TOP_K = 40
@@ -18,7 +20,7 @@ LOGGER = logging.getLogger("gemmaclip.gemma_client")
 
 
 @dataclass(frozen=True, slots=True)
-class GemmaConfig:
+class GemmaModelConfig:
     api_key: str
     base_url: str
     model: str
@@ -32,12 +34,48 @@ class GemmaConfig:
         return (self.model, *self.fallback_models)
 
 
+@dataclass(frozen=True, slots=True)
+class GemmaConfig:
+    api_key: str
+    base_url: str
+    vision_model: str
+    text_model: str
+    fallback_models: tuple[str, ...] = DEFAULT_FALLBACK_MODELS
+    max_tokens: int = DEFAULT_GEMMA_MAX_TOKENS
+    use_response_format: bool = False
+    timeout_seconds: float = 60.0
+
+    def vision_model_config(self) -> GemmaModelConfig:
+        return GemmaModelConfig(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            model=self.vision_model,
+            fallback_models=_filter_fallback_models(self.fallback_models, primary_model=self.vision_model),
+            max_tokens=self.max_tokens,
+            use_response_format=False,
+            timeout_seconds=self.timeout_seconds,
+        )
+
+    def text_model_config(self) -> GemmaModelConfig:
+        return GemmaModelConfig(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            model=self.text_model,
+            fallback_models=_filter_fallback_models(self.fallback_models, primary_model=self.text_model),
+            max_tokens=self.max_tokens,
+            use_response_format=self.use_response_format,
+            timeout_seconds=self.timeout_seconds,
+        )
+
+
 def load_gemma_config(env: Mapping[str, str] | None = None) -> GemmaConfig | None:
     values = env if env is not None else os.environ
     api_key = values.get("GEMMA_API_KEY", "").strip() or values.get("FIREWORKS_API_KEY", "").strip()
     base_url = values.get("GEMMA_BASE_URL", "").strip() or DEFAULT_FIREWORKS_BASE_URL
-    model = values.get("GEMMA_MODEL", "").strip() or DEFAULT_GEMMA_MODEL
-    fallback_models = _parse_fallback_models(values.get("GEMMA_FALLBACK_MODELS"), primary_model=model)
+    model_override = values.get("GEMMA_MODEL", "").strip()
+    vision_model = model_override or values.get("GEMMA_VISION_MODEL", "").strip() or DEFAULT_GEMMA_VISION_MODEL
+    text_model = model_override or values.get("GEMMA_TEXT_MODEL", "").strip() or DEFAULT_GEMMA_TEXT_MODEL
+    fallback_models = _parse_fallback_models(values.get("GEMMA_FALLBACK_MODELS"))
     max_tokens = _parse_max_tokens(values.get("GEMMA_MAX_TOKENS"))
     use_response_format = _parse_bool(values.get("GEMMA_USE_RESPONSE_FORMAT"))
     if not api_key or not base_url:
@@ -45,7 +83,8 @@ def load_gemma_config(env: Mapping[str, str] | None = None) -> GemmaConfig | Non
     return GemmaConfig(
         api_key=api_key,
         base_url=base_url,
-        model=model,
+        vision_model=vision_model,
+        text_model=text_model,
         fallback_models=fallback_models,
         max_tokens=max_tokens,
         use_response_format=use_response_format,
@@ -53,24 +92,45 @@ def load_gemma_config(env: Mapping[str, str] | None = None) -> GemmaConfig | Non
 
 
 class GemmaClient:
-    def __init__(self, config: GemmaConfig, client: httpx.Client | None = None) -> None:
+    def __init__(self, config: GemmaModelConfig, client: httpx.Client | None = None) -> None:
         self._config = config
         self._client = client or httpx.Client(timeout=config.timeout_seconds)
         self._working_model: str | None = None
+
+    def chat_completion_text(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        temperature: float,
+        *,
+        use_response_format: bool | None = None,
+    ) -> str:
+        payload = self._post_chat_completion(
+            messages=messages,
+            temperature=temperature,
+            use_response_format=use_response_format,
+        )
+        return extract_message_text(payload)
 
     def chat_completion_json(
         self,
         messages: Sequence[Mapping[str, Any]],
         temperature: float,
+        *,
+        use_response_format: bool | None = None,
     ) -> dict[str, Any]:
-        payload = self._post_chat_completion(messages=messages, temperature=temperature)
-        content = extract_message_text(payload)
+        content = self.chat_completion_text(
+            messages=messages,
+            temperature=temperature,
+            use_response_format=use_response_format,
+        )
         return parse_json_object(content)
 
     def _post_chat_completion(
         self,
         messages: Sequence[Mapping[str, Any]],
         temperature: float,
+        *,
+        use_response_format: bool | None = None,
     ) -> dict[str, Any]:
         url = f"{self._config.base_url.rstrip('/')}/chat/completions"
         attempted_failures: list[tuple[str, httpx.HTTPError]] = []
@@ -81,6 +141,7 @@ class GemmaClient:
                 messages=messages,
                 temperature=temperature,
                 model=model,
+                use_response_format=use_response_format,
             )
             try:
                 response = self._client.post(
@@ -130,11 +191,12 @@ class GemmaClient:
 
 
 def build_chat_completion_payload(
-    config: GemmaConfig,
+    config: GemmaModelConfig,
     *,
     messages: Sequence[Mapping[str, Any]],
     temperature: float,
     model: str | None = None,
+    use_response_format: bool | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model or config.model,
@@ -145,7 +207,7 @@ def build_chat_completion_payload(
         "presence_penalty": 0,
         "frequency_penalty": 0,
     }
-    if config.use_response_format:
+    if use_response_format if use_response_format is not None else config.use_response_format:
         payload["response_format"] = {"type": "json_object"}
     return payload
 
@@ -185,32 +247,46 @@ def extract_message_text(payload: Mapping[str, Any]) -> str:
     raise ValueError("Gemma response content did not contain text.")
 
 
-def parse_json_object(text: str) -> dict[str, Any]:
-    decoder = json.JSONDecoder()
-    candidate = text.strip()
-
-    fenced = _extract_fenced_json(candidate)
-    if fenced is not None:
-        candidate = fenced
-
-    for index, char in enumerate(candidate):
-        if char != "{":
-            continue
+def extract_json_objects(text: str) -> list[dict[str, Any]]:
+    objects: list[dict[str, Any]] = []
+    for candidate in _extract_json_candidates(text):
         try:
-            parsed, _ = decoder.raw_decode(candidate[index:])
+            parsed = json.loads(candidate)
         except json.JSONDecodeError:
             continue
         if isinstance(parsed, dict):
-            return parsed
+            objects.append(parsed)
+    return objects
 
-    raise ValueError("Could not extract a JSON object from the model response.")
+
+def parse_json_object(text: str) -> dict[str, Any]:
+    for candidate in reversed(extract_json_objects(text)):
+        if candidate:
+            return candidate
+    raise ValueError("Could not extract a non-empty JSON object from the model response.")
 
 
-def _extract_fenced_json(text: str) -> str | None:
+def _extract_json_candidates(text: str) -> list[str]:
+    candidates = _extract_fenced_json_blocks(text)
+    candidates.extend(_extract_balanced_brace_objects(text))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        stripped = candidate.strip()
+        if not stripped or stripped in seen:
+            continue
+        seen.add(stripped)
+        deduped.append(stripped)
+    return deduped
+
+
+def _extract_fenced_json_blocks(text: str) -> list[str]:
     marker = "```"
     if marker not in text:
-        return None
+        return []
 
+    blocks: list[str] = []
     for block in text.split(marker):
         stripped = block.strip()
         if not stripped:
@@ -218,8 +294,46 @@ def _extract_fenced_json(text: str) -> str | None:
         if stripped.startswith("json"):
             stripped = stripped[4:].strip()
         if stripped.startswith("{") and stripped.endswith("}"):
-            return stripped
-    return None
+            blocks.append(stripped)
+    return blocks
+
+
+def _extract_balanced_brace_objects(text: str) -> list[str]:
+    candidates: list[str] = []
+    start_index: int | None = None
+    depth = 0
+    in_string = False
+    escape_next = False
+
+    for index, char in enumerate(text):
+        if escape_next:
+            escape_next = False
+            continue
+
+        if char == "\\" and in_string:
+            escape_next = True
+            continue
+
+        if char == '"':
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if char == "{":
+            if depth == 0:
+                start_index = index
+            depth += 1
+            continue
+
+        if char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start_index is not None:
+                candidates.append(text[start_index:index + 1])
+                start_index = None
+
+    return candidates
 
 
 def _parse_max_tokens(value: str | None) -> int:
@@ -238,16 +352,24 @@ def _parse_bool(value: str | None) -> bool:
     return value.strip().lower() == "true"
 
 
-def _parse_fallback_models(value: str | None, *, primary_model: str) -> tuple[str, ...]:
+def _parse_fallback_models(value: str | None) -> tuple[str, ...]:
     raw_models = DEFAULT_FALLBACK_MODELS if value is None or not value.strip() else tuple(
         item.strip() for item in value.split(",")
     )
     normalized: list[str] = []
     for model in raw_models:
-        if not model or model == primary_model or model in normalized:
+        if not model or model in normalized:
             continue
         normalized.append(model)
     return tuple(normalized)
+
+
+def _filter_fallback_models(
+    fallback_models: Sequence[str],
+    *,
+    primary_model: str,
+) -> tuple[str, ...]:
+    return tuple(model for model in fallback_models if model != primary_model)
 
 
 def _should_try_next_model(exc: httpx.HTTPError) -> bool:
