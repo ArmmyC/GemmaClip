@@ -1,6 +1,6 @@
 # GemmaClip
 
-GemmaClip is a Track 2 AMD Developer Hackathon baseline agent. This milestone reads `/input/tasks.json`, downloads each video, probes metadata with `ffprobe`, extracts uniform frames with `ffmpeg`, and writes placeholder captions to `/output/results.json`.
+GemmaClip is a Track 2 AMD Developer Hackathon video captioning agent. It reads `/input/tasks.json`, downloads each video, probes metadata with `ffprobe`, extracts representative frames with `AKS-lite`, uses Gemma-first Fireworks inference to build factual evidence, generates style-specific captions, optionally verifies/refines them, and writes `/output/results.json`.
 
 Runtime model configuration:
 
