@@ -10,7 +10,16 @@ from gemmaclip.captioner import (
     select_gemma_frames,
 )
 from gemmaclip.frames import ExtractedFrame
-from gemmaclip.gemma_client import DEFAULT_FIREWORKS_BASE_URL, extract_message_text, load_gemma_config, parse_json_object
+from gemmaclip.gemma_client import (
+    DEFAULT_FIREWORKS_BASE_URL,
+    DEFAULT_GEMMA_MAX_TOKENS,
+    DEFAULT_TOP_K,
+    GemmaConfig,
+    build_chat_completion_payload,
+    extract_message_text,
+    load_gemma_config,
+    parse_json_object,
+)
 from gemmaclip.io import Task
 
 
@@ -111,6 +120,8 @@ def test_load_gemma_config_uses_fireworks_fallbacks():
     assert config.api_key == "fireworks-key"
     assert config.base_url == DEFAULT_FIREWORKS_BASE_URL
     assert config.model == "accounts/fireworks/models/custom-model"
+    assert config.max_tokens == DEFAULT_GEMMA_MAX_TOKENS
+    assert config.use_response_format is False
 
 
 def test_make_resized_jpeg_bytes_limits_max_side(tmp_path):
@@ -123,6 +134,57 @@ def test_make_resized_jpeg_bytes_limits_max_side(tmp_path):
 
     with Image.open(BytesIO(resized_bytes)) as resized_image:
         assert max(resized_image.size) <= 768
+
+
+def test_build_chat_completion_payload_matches_fireworks_defaults():
+    config = GemmaConfig(
+        api_key="key",
+        base_url=DEFAULT_FIREWORKS_BASE_URL,
+        model="accounts/fireworks/models/custom-model",
+    )
+    messages = [{"role": "user", "content": "hello"}]
+
+    payload = build_chat_completion_payload(config, messages=messages, temperature=0.7)
+
+    assert payload == {
+        "model": "accounts/fireworks/models/custom-model",
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": DEFAULT_GEMMA_MAX_TOKENS,
+        "top_k": DEFAULT_TOP_K,
+        "presence_penalty": 0,
+        "frequency_penalty": 0,
+    }
+
+
+def test_build_chat_completion_payload_includes_response_format_when_enabled():
+    config = GemmaConfig(
+        api_key="key",
+        base_url=DEFAULT_FIREWORKS_BASE_URL,
+        model="accounts/123/deployments/456",
+        max_tokens=1024,
+        use_response_format=True,
+    )
+
+    payload = build_chat_completion_payload(config, messages=[{"role": "user", "content": "hello"}], temperature=0.1)
+
+    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["max_tokens"] == 1024
+
+
+def test_load_gemma_config_reads_max_tokens_and_response_format():
+    config = load_gemma_config(
+        {
+            "FIREWORKS_API_KEY": "fireworks-key",
+            "GEMMA_MODEL": "accounts/fireworks/models/custom-model",
+            "GEMMA_MAX_TOKENS": "4096",
+            "GEMMA_USE_RESPONSE_FORMAT": "true",
+        }
+    )
+
+    assert config is not None
+    assert config.max_tokens == 4096
+    assert config.use_response_format is True
 
 
 def test_load_gemma_config_prefers_gemma_values_over_fireworks_fallbacks():
