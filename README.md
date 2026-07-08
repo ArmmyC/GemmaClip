@@ -2,6 +2,14 @@
 
 GemmaClip is a Track 2 AMD Developer Hackathon baseline agent. This milestone reads `/input/tasks.json`, downloads each video, probes metadata with `ffprobe`, extracts uniform frames with `ffmpeg`, and writes placeholder captions to `/output/results.json`.
 
+Runtime model configuration:
+
+- `FIREWORKS_API_KEY` or `GEMMA_API_KEY` must be injected at runtime.
+- No secrets are baked into the Docker image, README examples, source code, or tests.
+- GemmaClip tries Gemma 4 first with `accounts/fireworks/models/gemma-4-31b-it`.
+- If that model is unavailable to the runtime key, GemmaClip tries fallback models from `GEMMA_FALLBACK_MODELS`, or `accounts/fireworks/models/kimi-k2p6` by default.
+- Set `GEMMA_MODEL` to point at a different primary model, including a local or dedicated Fireworks deployment path.
+
 Local run:
 
 ```bash

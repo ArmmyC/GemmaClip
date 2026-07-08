@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from io import BytesIO
 
+import httpx
+
 from gemmaclip.captioner import (
     build_evidence_debug_payload,
     build_fallback_captions,
@@ -15,9 +17,12 @@ from gemmaclip.captioner import (
 )
 from gemmaclip.frames import ExtractedFrame
 from gemmaclip.gemma_client import (
+    DEFAULT_FALLBACK_MODELS,
     DEFAULT_FIREWORKS_BASE_URL,
+    DEFAULT_GEMMA_MODEL,
     DEFAULT_GEMMA_MAX_TOKENS,
     DEFAULT_TOP_K,
+    GemmaClient,
     GemmaConfig,
     build_chat_completion_payload,
     extract_message_text,
@@ -152,6 +157,20 @@ def test_build_evidence_debug_payload_contains_task_id_selected_frames_and_evide
 
 def test_load_gemma_config_uses_fireworks_fallbacks():
     config = load_gemma_config(
+        {"FIREWORKS_API_KEY": "fireworks-key"}
+    )
+
+    assert config is not None
+    assert config.api_key == "fireworks-key"
+    assert config.base_url == DEFAULT_FIREWORKS_BASE_URL
+    assert config.model == DEFAULT_GEMMA_MODEL
+    assert config.fallback_models == DEFAULT_FALLBACK_MODELS
+    assert config.max_tokens == DEFAULT_GEMMA_MAX_TOKENS
+    assert config.use_response_format is False
+
+
+def test_load_gemma_config_uses_gemma_model_override():
+    config = load_gemma_config(
         {
             "FIREWORKS_API_KEY": "fireworks-key",
             "GEMMA_MODEL": "accounts/fireworks/models/custom-model",
@@ -159,11 +178,22 @@ def test_load_gemma_config_uses_fireworks_fallbacks():
     )
 
     assert config is not None
-    assert config.api_key == "fireworks-key"
-    assert config.base_url == DEFAULT_FIREWORKS_BASE_URL
     assert config.model == "accounts/fireworks/models/custom-model"
-    assert config.max_tokens == DEFAULT_GEMMA_MAX_TOKENS
-    assert config.use_response_format is False
+
+
+def test_load_gemma_config_parses_fallback_model_list():
+    config = load_gemma_config(
+        {
+            "FIREWORKS_API_KEY": "fireworks-key",
+            "GEMMA_FALLBACK_MODELS": "accounts/fireworks/models/fallback-a, accounts/fireworks/models/fallback-b",
+        }
+    )
+
+    assert config is not None
+    assert config.fallback_models == (
+        "accounts/fireworks/models/fallback-a",
+        "accounts/fireworks/models/fallback-b",
+    )
 
 
 def test_make_resized_jpeg_bytes_limits_max_side(tmp_path):
@@ -243,6 +273,86 @@ def test_load_gemma_config_prefers_gemma_values_over_fireworks_fallbacks():
     assert config.api_key == "gemma-key"
     assert config.base_url == "https://example.com/custom/v1"
     assert config.model == "accounts/123/deployments/456"
+
+
+def test_load_gemma_config_returns_none_without_any_api_key():
+    assert load_gemma_config({"GEMMA_MODEL": "accounts/fireworks/models/custom-model"}) is None
+
+
+def test_gemma_client_falls_back_when_primary_model_is_unavailable():
+    class RecordingHttpClient:
+        def __init__(self):
+            self.models: list[str] = []
+
+        def post(self, url, headers, json):
+            self.models.append(json["model"])
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            if json["model"] == "primary-model":
+                return httpx.Response(
+                    404,
+                    request=request,
+                    json={"error": {"message": "model not found"}},
+                )
+            return httpx.Response(
+                200,
+                request=request,
+                json={"choices": [{"message": {"content": '{"scene":"office"}'}}]},
+            )
+
+    http_client = RecordingHttpClient()
+    client = GemmaClient(
+        GemmaConfig(
+            api_key="key",
+            base_url=DEFAULT_FIREWORKS_BASE_URL,
+            model="primary-model",
+            fallback_models=("fallback-model",),
+        ),
+        client=http_client,
+    )
+
+    payload = client.chat_completion_json([{"role": "user", "content": "hello"}], temperature=0.1)
+
+    assert payload == {"scene": "office"}
+    assert http_client.models == ["primary-model", "fallback-model"]
+
+
+def test_gemma_client_caches_first_working_model_after_fallback():
+    class RecordingHttpClient:
+        def __init__(self):
+            self.models: list[str] = []
+
+        def post(self, url, headers, json):
+            self.models.append(json["model"])
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            if json["model"] == "primary-model":
+                return httpx.Response(
+                    403,
+                    request=request,
+                    json={"error": {"message": "model unavailable"}},
+                )
+            return httpx.Response(
+                200,
+                request=request,
+                json={"choices": [{"message": {"content": '{"scene":"office"}'}}]},
+            )
+
+    http_client = RecordingHttpClient()
+    client = GemmaClient(
+        GemmaConfig(
+            api_key="key",
+            base_url=DEFAULT_FIREWORKS_BASE_URL,
+            model="primary-model",
+            fallback_models=("fallback-model",),
+        ),
+        client=http_client,
+    )
+
+    first_payload = client.chat_completion_json([{"role": "user", "content": "first"}], temperature=0.1)
+    second_payload = client.chat_completion_json([{"role": "user", "content": "second"}], temperature=0.1)
+
+    assert first_payload == {"scene": "office"}
+    assert second_payload == {"scene": "office"}
+    assert http_client.models == ["primary-model", "fallback-model", "fallback-model"]
 
 
 def test_normalize_captions_rejects_banned_speculation_phrase():

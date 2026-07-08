@@ -83,7 +83,7 @@ def generate_captions(
     config = load_gemma_config(env)
     if config is None:
         active_logger.warning(
-            "Task %s missing API credentials or GEMMA_MODEL; using placeholder captions.",
+            "Task %s missing API credentials; using placeholder captions.",
             task.task_id,
         )
         return build_placeholder_captions(task.styles)
