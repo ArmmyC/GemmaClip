@@ -6,8 +6,10 @@ from gemmaclip.captioner import (
     build_evidence_debug_payload,
     build_fallback_captions,
     build_placeholder_captions,
+    build_verifier_messages,
     generate_captions,
     make_resized_jpeg_bytes,
+    maybe_verify_captions,
     normalize_captions,
     select_gemma_frames,
 )
@@ -34,8 +36,10 @@ def make_task() -> Task:
 
 
 def make_frames(tmp_path) -> list[ExtractedFrame]:
+    from PIL import Image
+
     frame_path = tmp_path / "frame_001.jpg"
-    frame_path.write_bytes(b"jpeg-bytes")
+    Image.new("RGB", (80, 45), color="blue").save(frame_path, format="JPEG", quality=85)
     return [ExtractedFrame(path=frame_path, timestamp_seconds=0.25)]
 
 
@@ -290,6 +294,129 @@ def test_normalize_captions_allows_humorous_tech_metaphor_without_coding_claim()
     )
 
     assert "humorous_tech" in captions
+
+
+def test_verifier_is_skipped_when_disabled(tmp_path):
+    class FailingClient:
+        def chat_completion_json(self, messages, temperature):
+            raise AssertionError("Verifier should not run when disabled.")
+
+    captions = maybe_verify_captions(
+        make_task(),
+        {"formal": "A worker stands near a desk in a quiet office during a routine moment.", "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today."},
+        make_evidence(),
+        FailingClient(),
+        {"GEMMACLIP_DISABLE_VERIFIER": "true"},
+    )
+
+    assert "formal" in captions
+
+
+def test_verifier_failure_keeps_original_captions():
+    class FailingClient:
+        def chat_completion_json(self, messages, temperature):
+            raise ValueError("Verifier failed.")
+
+    original = {
+        "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+        "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+    }
+
+    captions = maybe_verify_captions(
+        make_task(),
+        original,
+        make_evidence(),
+        FailingClient(),
+        {},
+    )
+
+    assert captions == original
+
+
+def test_verifier_output_is_validated():
+    class InvalidVerifierClient:
+        def chat_completion_json(self, messages, temperature):
+            return {
+                "formal": "A worker probably stands here.",
+                "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+            }
+
+    original = {
+        "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+        "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+    }
+
+    captions = maybe_verify_captions(
+        make_task(),
+        original,
+        make_evidence(),
+        InvalidVerifierClient(),
+        {},
+    )
+
+    assert captions == original
+
+
+def test_build_verifier_messages_includes_task_evidence_and_captions():
+    messages = build_verifier_messages(
+        "clip-1",
+        ("formal", "sarcastic"),
+        make_evidence(),
+        {
+            "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+            "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+        },
+    )
+
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    assert "Task ID: clip-1" in messages[1]["content"]
+
+
+def test_generate_captions_writes_debug_caption_files(tmp_path):
+    class FakeClient:
+        def __init__(self, _config):
+            self.calls = 0
+
+        def chat_completion_json(self, messages, temperature):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "scene": "office",
+                    "main_subjects": ["worker"],
+                    "actions": ["standing"],
+                    "setting": "office",
+                    "visible_objects": ["desk"],
+                    "mood": "neutral",
+                    "camera_notes": "static shot",
+                    "uncertain_details": [],
+                }
+            if self.calls == 2:
+                return {
+                    "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+                    "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+                }
+            return {
+                "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+                "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+            }
+
+    debug_dir = tmp_path / "debug"
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={
+            "GEMMA_API_KEY": "key",
+            "GEMMA_BASE_URL": "https://example.com/v1",
+            "GEMMA_MODEL": "gemma-test",
+        },
+        debug_dir=debug_dir,
+        client_factory=FakeClient,
+    )
+
+    assert captions["formal"]
+    assert (debug_dir / "clip-1_captions_raw.json").exists()
+    assert (debug_dir / "clip-1_captions_verified.json").exists()
 
 
 def test_generate_captions_uses_placeholder_when_config_missing(tmp_path):

@@ -138,33 +138,37 @@ def select_aks_lite_frames(
     candidates: list[ExtractedFrame],
     max_frames: int = MAX_GEMMA_FRAMES,
 ) -> list[ExtractedFrame]:
+    if max_frames <= 0:
+        return []
     if not candidates:
         return []
 
     metrics = _load_candidate_metrics(candidates)
     if not metrics:
         return []
-    if max_frames <= 1:
-        return [metrics[0].frame]
     if len(metrics) <= max_frames:
         return [metric.frame for metric in metrics]
 
-    selected_indices = {0, len(metrics) - 1}
-    while len(selected_indices) < min(max_frames, len(metrics)):
-        best_index: int | None = None
-        best_score = float("-inf")
-        for index, metric in enumerate(metrics):
-            if index in selected_indices:
-                continue
-            score = _score_candidate(index, metric, metrics, selected_indices)
-            if score > best_score:
-                best_score = score
-                best_index = index
-        if best_index is None:
-            break
-        selected_indices.add(best_index)
+    selected_indices: list[int] = []
+    for bin_index in range(max_frames):
+        start = (bin_index * len(metrics)) // max_frames
+        end = ((bin_index + 1) * len(metrics)) // max_frames
+        bin_metrics = metrics[start:end]
+        if not bin_metrics:
+            continue
+        if bin_index == 0:
+            best_index = start
+        elif bin_index == max_frames - 1:
+            best_index = end - 1
+        else:
+            best_index = max(
+                range(start, end),
+                key=lambda index: _quality_score(metrics[index], metrics),
+            )
+        selected_indices.append(best_index)
 
-    return [metrics[index].frame for index in sorted(selected_indices)]
+    unique_indices = sorted(set(selected_indices))
+    return [metrics[index].frame for index in unique_indices]
 
 
 def export_debug_artifacts(
@@ -286,40 +290,14 @@ def _load_candidate_metrics(candidates: list[ExtractedFrame]) -> list[_Candidate
     return metrics
 
 
-def _score_candidate(
-    index: int,
+def _quality_score(
     metric: _CandidateMetrics,
     metrics: list[_CandidateMetrics],
-    selected_indices: set[int],
 ) -> float:
-    total = max(len(metrics) - 1, 1)
-    temporal_distance = min(abs(index - selected_index) for selected_index in selected_indices)
-    temporal_score = temporal_distance / total
-
     sharpness_score = _normalize_metric(metric.sharpness, [item.sharpness for item in metrics])
     scene_score = _normalize_metric(metric.scene_change, [item.scene_change for item in metrics])
     motion_score = _normalize_metric(metric.motion, [item.motion for item in metrics])
-    diversity_penalty = _diversity_penalty(metric, [metrics[selected_index] for selected_index in selected_indices])
-
-    return (
-        0.35 * temporal_score
-        + 0.25 * sharpness_score
-        + 0.20 * scene_score
-        + 0.20 * motion_score
-        - 0.30 * diversity_penalty
-    )
-
-
-def _diversity_penalty(metric: _CandidateMetrics, selected_metrics: list[_CandidateMetrics]) -> float:
-    _, _, _, _, ImageChops, ImageStat = _load_pillow()
-    if not selected_metrics:
-        return 0.0
-
-    minimum_difference = min(
-        _mean_difference(metric.gray_image, selected.gray_image, ImageChops, ImageStat)
-        for selected in selected_metrics
-    )
-    return max(0.0, 1.0 - minimum_difference)
+    return 0.40 * sharpness_score + 0.30 * scene_score + 0.30 * motion_score
 
 
 def _open_candidate_preview(frame_path: Path):

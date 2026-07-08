@@ -37,6 +37,14 @@ def test_aks_lite_selected_frames_are_chronological(tmp_path):
     assert [frame.timestamp_seconds for frame in selected] == sorted(frame.timestamp_seconds for frame in selected)
 
 
+def test_aks_lite_returns_empty_when_max_frames_is_zero(tmp_path):
+    frames = make_candidate_frames(tmp_path, 24)
+
+    selected = select_aks_lite_frames(frames, max_frames=0)
+
+    assert selected == []
+
+
 def test_aks_lite_includes_first_and_last_frames_when_available(tmp_path):
     frames = make_candidate_frames(tmp_path, 24)
 
@@ -44,6 +52,38 @@ def test_aks_lite_includes_first_and_last_frames_when_available(tmp_path):
 
     assert selected[0].path == frames[0].path
     assert selected[-1].path == frames[-1].path
+
+
+def test_aks_lite_covers_early_middle_and_late_portions(tmp_path):
+    frames = make_candidate_frames(tmp_path, 36)
+
+    selected = select_aks_lite_frames(frames, max_frames=12)
+    indices = [int(frame.timestamp_seconds) for frame in selected]
+
+    assert any(index <= 5 for index in indices)
+    assert any(14 <= index <= 21 for index in indices)
+    assert any(index >= 30 for index in indices)
+
+
+def test_aks_lite_gaps_are_not_excessively_large_for_even_candidates(tmp_path):
+    frames = make_candidate_frames(tmp_path, 36)
+
+    selected = select_aks_lite_frames(frames, max_frames=12)
+    indices = [int(frame.timestamp_seconds) for frame in selected]
+    gaps = [current - previous for previous, current in zip(indices, indices[1:])]
+
+    assert gaps
+    assert max(gaps) <= 5
+
+
+def test_aks_lite_first_and_last_bins_are_represented(tmp_path):
+    frames = make_candidate_frames(tmp_path, 36)
+
+    selected = select_aks_lite_frames(frames, max_frames=12)
+    indices = [int(frame.timestamp_seconds) for frame in selected]
+
+    assert any(0 <= index <= 2 for index in indices)
+    assert any(33 <= index <= 35 for index in indices)
 
 
 def test_uniform_strategy_still_works(tmp_path, monkeypatch):

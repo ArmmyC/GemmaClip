@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping, Sequence
 from io import BytesIO
 import json
 import logging
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -18,6 +19,8 @@ from gemmaclip.prompts import (
     build_caption_user_prompt,
     build_evidence_system_prompt,
     build_evidence_user_prompt,
+    build_verifier_system_prompt,
+    build_verifier_user_prompt,
 )
 
 LOGGER = logging.getLogger("gemmaclip.captioner")
@@ -76,6 +79,7 @@ def generate_captions(
         active_logger.info("Task %s running in dry-run mode; using placeholder captions.", task.task_id)
         return build_placeholder_captions(task.styles)
 
+    values = env if env is not None else os.environ
     config = load_gemma_config(env)
     if config is None:
         active_logger.warning(
@@ -105,7 +109,19 @@ def generate_captions(
             task.styles,
             evidence,
         )
-        return captions
+        if debug_dir is not None:
+            write_captions_debug_file(task.task_id, captions, debug_dir, suffix="raw")
+        final_captions = maybe_verify_captions(
+            task,
+            captions,
+            evidence,
+            client,
+            values,
+            debug_dir=debug_dir,
+        )
+        if debug_dir is not None:
+            write_captions_debug_file(task.task_id, final_captions, debug_dir, suffix="verified")
+        return final_captions
     except Exception as exc:
         active_logger.warning("Task %s failed during Gemma captioning, using fallback captions: %s", task.task_id, exc)
         return build_fallback_captions(task.styles)
@@ -181,6 +197,28 @@ def write_evidence_debug_file(
     return output_path
 
 
+def write_captions_debug_file(
+    task_id: str,
+    captions: dict[str, str],
+    debug_dir: str | Path,
+    *,
+    suffix: str,
+) -> Path:
+    output_path = Path(debug_dir) / f"{safe_task_id(task_id)}_captions_{suffix}.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(
+            {
+                "task_id": task_id,
+                "captions": captions,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return output_path
+
+
 def select_gemma_frames(
     frames: Sequence[ExtractedFrame],
     max_frames: int = MAX_GEMMA_FRAMES,
@@ -229,6 +267,18 @@ def build_caption_messages(
     return [
         {"role": "system", "content": build_caption_system_prompt()},
         {"role": "user", "content": build_caption_user_prompt(task_id, styles, evidence)},
+    ]
+
+
+def build_verifier_messages(
+    task_id: str,
+    styles: Sequence[str],
+    evidence: dict[str, Any],
+    captions: dict[str, str],
+) -> list[dict[str, Any]]:
+    return [
+        {"role": "system", "content": build_verifier_system_prompt()},
+        {"role": "user", "content": build_verifier_user_prompt(task_id, styles, evidence, captions)},
     ]
 
 
@@ -284,6 +334,28 @@ def normalize_captions(
     return captions
 
 
+def maybe_verify_captions(
+    task: Task,
+    captions: dict[str, str],
+    evidence: dict[str, Any],
+    client: GemmaClient,
+    env: Mapping[str, str],
+    *,
+    debug_dir: str | Path | None = None,
+) -> dict[str, str]:
+    if _verifier_disabled(env):
+        return captions
+
+    try:
+        verifier_messages = build_verifier_messages(task.task_id, task.styles, evidence, captions)
+        verified_payload = client.chat_completion_json(verifier_messages, temperature=0.2)
+        verified_captions = normalize_captions(verified_payload, task.styles, evidence)
+    except Exception:
+        return captions
+
+    return verified_captions
+
+
 def validate_caption(caption: str, style: str, evidence: dict[str, Any]) -> None:
     if not caption.strip():
         raise ValueError("Caption must not be empty.")
@@ -326,3 +398,7 @@ def _load_pillow_image():
         raise RuntimeError("Pillow is required for Gemma image payload resizing.") from exc
 
     return Image
+
+
+def _verifier_disabled(env: Mapping[str, str]) -> bool:
+    return env.get("GEMMACLIP_DISABLE_VERIFIER", "").strip().lower() == "true"

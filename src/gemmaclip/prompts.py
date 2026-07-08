@@ -74,3 +74,31 @@ def build_caption_user_prompt(
         "Use neutral wording like person, worker, or office worker unless the evidence explicitly supports a more "
         "specific claim."
     )
+
+
+def build_verifier_system_prompt() -> str:
+    return (
+        "You are GemmaClip's caption verifier and minimal refiner. Use only the provided evidence JSON. "
+        "Return exactly one JSON object with the same requested style keys and final caption strings. "
+        "Keep good captions unchanged. Only minimally rewrite captions that invent unsupported facts, use banned "
+        "speculation phrases, exceed 25 words, weakly match the requested style, or make unsupported coding, script, "
+        "developer, debugging, programming, or software-development claims. Do not add new visual facts beyond the "
+        "evidence."
+    )
+
+
+def build_verifier_user_prompt(
+    task_id: str,
+    styles: Sequence[str],
+    evidence: dict[str, Any],
+    captions: dict[str, str],
+) -> str:
+    return (
+        f"Task ID: {task_id}\n"
+        f"Requested styles: {', '.join(styles)}\n"
+        "Evidence JSON:\n"
+        f"{json.dumps(evidence, indent=2)}\n"
+        "Current captions JSON:\n"
+        f"{json.dumps(captions, indent=2)}\n"
+        "Return a JSON object with the same style keys and final caption strings only."
+    )
