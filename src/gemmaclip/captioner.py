@@ -23,19 +23,27 @@ from gemmaclip.prompts import (
 LOGGER = logging.getLogger("gemmaclip.captioner")
 MAX_GEMMA_FRAMES = 12
 MAX_CAPTION_WORDS = 25
-SPECULATION_PATTERNS = (
-    re.compile(r"\blikely\b"),
-    re.compile(r"\bprobably\b"),
-    re.compile(r"\bmaybe\b"),
-    re.compile(r"\bappears to be\b"),
-    re.compile(r"\bseems to be\b"),
+BANNED_SPECULATION_PHRASES = (
+    "likely",
+    "probably",
+    "maybe",
+    "appears to be",
+    "seems to be",
+)
+SPECULATION_PATTERNS = tuple(
+    re.compile(rf"\b{re.escape(phrase)}\b")
+    for phrase in BANNED_SPECULATION_PHRASES
 )
 TECH_CLAIM_PATTERNS = (
     re.compile(r"\bscript\b"),
     re.compile(r"\bscripts\b"),
     re.compile(r"\bcoding\b"),
     re.compile(r"\bcode\b"),
+    re.compile(r"\bdebugging\b"),
+    re.compile(r"\bdebug\b"),
+    re.compile(r"\bdeveloper\b"),
     re.compile(r"\bprogramming\b"),
+    re.compile(r"\bsoftware development\b"),
     re.compile(r"\brunning scripts\b"),
 )
 TECH_EVIDENCE_PATTERNS = (
@@ -44,6 +52,9 @@ TECH_EVIDENCE_PATTERNS = (
     re.compile(r"\bcoding\b"),
     re.compile(r"\bcode\b"),
     re.compile(r"\bprogramming\b"),
+    re.compile(r"\bdebugging\b"),
+    re.compile(r"\bdeveloper\b"),
+    re.compile(r"\bsoftware development\b"),
     re.compile(r"\bterminal\b"),
     re.compile(r"\bcommand line\b"),
 )
@@ -274,6 +285,9 @@ def normalize_captions(
 
 
 def validate_caption(caption: str, style: str, evidence: dict[str, Any]) -> None:
+    if not caption.strip():
+        raise ValueError("Caption must not be empty.")
+
     lowered = caption.strip().lower()
     for pattern in SPECULATION_PATTERNS:
         if pattern.search(lowered):

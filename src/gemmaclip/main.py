@@ -8,7 +8,7 @@ from typing import Any
 
 from gemmaclip.captioner import build_fallback_captions, generate_captions
 from gemmaclip.download import download_video
-from gemmaclip.frames import export_debug_artifacts, extract_uniform_frames
+from gemmaclip.frames import DEFAULT_FRAME_STRATEGY, VALID_FRAME_STRATEGIES, export_debug_artifacts, extract_frames
 from gemmaclip.io import Task, make_frame_manifest_entry, read_tasks, write_frame_manifest, write_results
 from gemmaclip.validate import validate_results
 from gemmaclip.video import probe_video
@@ -35,6 +35,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 workdir=workdir,
                 debug_dir=debug_dir,
                 dry_run=args.dry_run,
+                frame_strategy=args.frame_strategy,
             )
             results.append(result)
             if manifest_entry is not None:
@@ -64,6 +65,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Use placeholder captions and skip all Gemma API calls.",
     )
+    parser.add_argument(
+        "--frame-strategy",
+        choices=sorted(VALID_FRAME_STRATEGIES),
+        default=DEFAULT_FRAME_STRATEGY,
+        help="Frame extraction strategy.",
+    )
     return parser.parse_args(argv)
 
 
@@ -76,14 +83,16 @@ def process_task(
     workdir: Path,
     debug_dir: Path | None = None,
     dry_run: bool = False,
+    frame_strategy: str = DEFAULT_FRAME_STRATEGY,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
         video_path = download_video(task, destination_dir=workdir / "videos")
         metadata = probe_video(video_path)
-        extracted_frames = extract_uniform_frames(
+        extracted_frames = extract_frames(
             task.task_id,
             video_path,
             metadata,
+            strategy=frame_strategy,
             destination_root=workdir / "frames",
         )
         manifest_entry = make_frame_manifest_entry(task.task_id, video_path, extracted_frames, metadata)

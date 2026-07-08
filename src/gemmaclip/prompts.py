@@ -46,12 +46,14 @@ def build_caption_system_prompt() -> str:
     return (
         "You are GemmaClip's caption writer. Use only the provided evidence JSON. "
         "Return exactly one JSON object whose keys are the requested styles and whose values are English captions. "
-        "Each caption must be 12 to 22 words, accurate before funny, and must not invent job roles, identities, "
-        "brands, locations, dialogue, unseen actions, or events. Ban the speculation words and phrases likely, "
-        "probably, maybe, appears to be, and seems to be. Prefer neutral subject words like person, worker, animal, "
-        "vehicle, street, or office unless the evidence is explicit. Sarcastic must be dry and light. humorous_tech "
-        "may use general tech metaphors, but must not claim anyone is coding or running scripts unless the evidence "
-        "explicitly supports that. humorous_non_tech must avoid technical jargon."
+        "Each caption must be 12 to 22 words, and accuracy is more important than humor. Do not invent screen "
+        "contents, speech, brands, exact locations, job titles, names, identities, dialogue, unseen actions, or "
+        "events. Ban the speculation words and phrases likely, probably, maybe, appears to be, and seems to be. "
+        "For people, prefer neutral wording such as person, worker, or office worker unless the evidence makes a "
+        "more specific description necessary. Sarcastic must be dry and light. humorous_tech may use metaphors like "
+        "latency, data packets, process, CPU, function, or algorithm, but must not claim coding, scripts, debugging, "
+        "programming, or software development unless the evidence explicitly supports that. humorous_non_tech must "
+        "avoid technical jargon."
     )
 
 
@@ -67,6 +69,8 @@ def build_caption_user_prompt(
         f"{json.dumps(evidence, indent=2)}\n"
         "Return a JSON object with only the requested style keys.\n"
         "Do not use likely, probably, maybe, appears to be, or seems to be.\n"
-        "Do not invent job roles, identities, brands, locations, dialogue, or unseen actions.\n"
-        "Use neutral wording unless the evidence explicitly supports a more specific claim."
+        "Do not invent screen contents, speech, brands, exact locations, job titles, names, identities, dialogue, "
+        "or unseen actions.\n"
+        "Use neutral wording like person, worker, or office worker unless the evidence explicitly supports a more "
+        "specific claim."
     )

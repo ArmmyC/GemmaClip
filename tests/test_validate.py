@@ -105,3 +105,24 @@ def test_validate_results_rejects_duplicate_result_task_id():
                 },
             ],
         )
+
+
+def test_results_format_remains_task_id_and_captions_only():
+    results = [
+        {
+            "task_id": "clip-1",
+            "captions": {
+                "formal": "A worker stands near a desk in a quiet office environment during a routine moment.",
+                "sarcastic": "A worker stands in the office, clearly delivering premium excitement at a world-class ordinary pace.",
+            },
+        },
+        {
+            "task_id": "clip-2",
+            "captions": {
+                "formal": "A short office scene shows a person near a workstation in a calm indoor setting.",
+            },
+        },
+    ]
+
+    validate_results(make_tasks(), results)
+    assert all(set(item) == {"task_id", "captions"} for item in results)

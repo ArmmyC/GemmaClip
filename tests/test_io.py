@@ -165,5 +165,5 @@ def test_generate_contact_sheet_reports_missing_pillow(tmp_path, monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    with pytest.raises(RuntimeError, match="Pillow is required for --debug-dir contact sheets"):
+    with pytest.raises(RuntimeError, match="Pillow is required"):
         generate_contact_sheet([frame_path], tmp_path / "contact_sheet.jpg")

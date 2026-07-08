@@ -282,6 +282,16 @@ def test_normalize_captions_rejects_unsupported_humorous_tech_script_claim():
         raise AssertionError("Expected normalize_captions to reject unsupported scripting claims.")
 
 
+def test_normalize_captions_allows_humorous_tech_metaphor_without_coding_claim():
+    captions = normalize_captions(
+        {"humorous_tech": "Traffic moves like data packets hitting CPU limits during an unusually patient rush hour commute today."},
+        ("humorous_tech",),
+        make_evidence(actions=["moving"], setting="street"),
+    )
+
+    assert "humorous_tech" in captions
+
+
 def test_generate_captions_uses_placeholder_when_config_missing(tmp_path):
     captions = generate_captions(
         make_task(),
