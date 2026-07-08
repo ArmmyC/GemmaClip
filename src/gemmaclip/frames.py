@@ -144,6 +144,8 @@ def select_aks_lite_frames(
     metrics = _load_candidate_metrics(candidates)
     if not metrics:
         return []
+    if max_frames <= 1:
+        return [metrics[0].frame]
     if len(metrics) <= max_frames:
         return [metric.frame for metric in metrics]
 

@@ -64,3 +64,34 @@ def test_uniform_strategy_still_works(tmp_path, monkeypatch):
     assert len(frames) == 12
     assert [frame.timestamp_seconds for frame in frames] == sorted(frame.timestamp_seconds for frame in frames)
     assert all(frame.path.exists() for frame in frames)
+
+
+def test_aks_lite_extract_frames_integration(tmp_path, monkeypatch):
+    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg"):
+        red = int((timestamp * 37) % 255)
+        green = int((timestamp * 61) % 255)
+        blue = int((timestamp * 89) % 255)
+        image = Image.new("RGB", (160, 90), color=(red, green, blue))
+        draw = ImageDraw.Draw(image)
+        offset = int((timestamp * 10) % 40)
+        draw.rectangle((10 + offset, 12, 70 + offset, 74), outline="white", width=3)
+        draw.line((0, offset, 159, 89 - offset), fill="yellow", width=2)
+        image.save(output_path, format="JPEG", quality=90)
+
+    monkeypatch.setattr("gemmaclip.frames._extract_frame", fake_extract_frame)
+
+    destination_root = tmp_path / "frames"
+    frames = extract_frames(
+        "clip-1",
+        tmp_path / "video.mp4",
+        VideoMetadata(duration_seconds=75.0, fps=24.0, width=1920, height=1080, frame_count=1800),
+        strategy="aks-lite",
+        destination_root=destination_root,
+    )
+
+    task_dir = destination_root / "clip-1"
+    assert len(frames) <= 12
+    assert [frame.timestamp_seconds for frame in frames] == sorted(frame.timestamp_seconds for frame in frames)
+    assert all(frame.path.exists() for frame in frames)
+    assert [frame.path.name for frame in frames] == [f"frame_{index:03d}.jpg" for index in range(1, len(frames) + 1)]
+    assert not (task_dir / "_candidates").exists()
