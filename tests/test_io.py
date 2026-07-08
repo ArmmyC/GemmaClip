@@ -5,8 +5,8 @@ import builtins
 
 import pytest
 
+from gemmaclip.frames import ExtractedFrame, generate_contact_sheet
 from gemmaclip.io import make_frame_manifest_entry, read_tasks, write_frame_manifest
-from gemmaclip.frames import generate_contact_sheet
 from gemmaclip.video import VideoMetadata
 
 
@@ -101,9 +101,15 @@ def test_write_frame_manifest_writes_expected_payload(tmp_path):
     entry = make_frame_manifest_entry(
         task_id="clip-1",
         video_path=tmp_path / "videos" / "clip-1.mp4",
-        frame_paths=[
-            tmp_path / "frames" / "clip-1" / "frame_001.jpg",
-            tmp_path / "frames" / "clip-1" / "frame_002.jpg",
+        frames=[
+            ExtractedFrame(
+                path=tmp_path / "frames" / "clip-1" / "frame_001.jpg",
+                timestamp_seconds=0.25,
+            ),
+            ExtractedFrame(
+                path=tmp_path / "frames" / "clip-1" / "frame_002.jpg",
+                timestamp_seconds=3.75,
+            ),
         ],
         metadata=VideoMetadata(
             duration_seconds=42.5,
@@ -124,6 +130,16 @@ def test_write_frame_manifest_writes_expected_payload(tmp_path):
             "frame_paths": [
                 str(tmp_path / "frames" / "clip-1" / "frame_001.jpg"),
                 str(tmp_path / "frames" / "clip-1" / "frame_002.jpg"),
+            ],
+            "frames": [
+                {
+                    "path": str(tmp_path / "frames" / "clip-1" / "frame_001.jpg"),
+                    "timestamp_seconds": 0.25,
+                },
+                {
+                    "path": str(tmp_path / "frames" / "clip-1" / "frame_002.jpg"),
+                    "timestamp_seconds": 3.75,
+                },
             ],
             "metadata": {
                 "duration_seconds": 42.5,

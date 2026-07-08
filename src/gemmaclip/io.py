@@ -80,13 +80,20 @@ def write_results(results: list[dict[str, Any]], output_path: str | Path) -> Non
 def make_frame_manifest_entry(
     task_id: str,
     video_path: str | Path,
-    frame_paths: list[str | Path],
+    frames: list[Any],
     metadata: VideoMetadata,
 ) -> dict[str, Any]:
     return {
         "task_id": task_id,
         "video_path": str(Path(video_path)),
-        "frame_paths": [str(Path(frame_path)) for frame_path in frame_paths],
+        "frame_paths": [str(frame.path) for frame in frames],
+        "frames": [
+            {
+                "path": str(frame.path),
+                "timestamp_seconds": frame.timestamp_seconds,
+            }
+            for frame in frames
+        ],
         "metadata": {
             "duration_seconds": metadata.duration_seconds,
             "fps": metadata.fps,

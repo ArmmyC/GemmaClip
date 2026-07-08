@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 from math import ceil, sqrt
 from pathlib import Path
 import shutil
@@ -9,6 +10,12 @@ from gemmaclip.io import safe_task_id
 from gemmaclip.video import VideoMetadata
 
 DEFAULT_FRAMES_DIR = Path("/tmp/gemmaclip/frames")
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedFrame:
+    path: Path
+    timestamp_seconds: float
 
 
 def select_frame_count(duration_seconds: float) -> int:
@@ -25,7 +32,7 @@ def extract_uniform_frames(
     metadata: VideoMetadata,
     destination_root: Path = DEFAULT_FRAMES_DIR,
     ffmpeg_binary: str = "ffmpeg",
-) -> list[Path]:
+) -> list[ExtractedFrame]:
     video_file = Path(video_path)
     destination_dir = destination_root / safe_task_id(task_id)
     destination_dir.mkdir(parents=True, exist_ok=True)
@@ -36,17 +43,17 @@ def extract_uniform_frames(
     frame_count = select_frame_count(metadata.duration_seconds)
     timestamps = _uniform_timestamps(metadata.duration_seconds, frame_count)
 
-    output_paths: list[Path] = []
+    output_frames: list[ExtractedFrame] = []
     for index, timestamp in enumerate(timestamps, start=1):
         output_path = destination_dir / f"frame_{index:03d}.jpg"
         _extract_frame(video_file, output_path, timestamp, ffmpeg_binary=ffmpeg_binary)
-        output_paths.append(output_path)
-    return output_paths
+        output_frames.append(ExtractedFrame(path=output_path, timestamp_seconds=timestamp))
+    return output_frames
 
 
 def export_debug_artifacts(
     task_id: str,
-    frame_paths: list[Path],
+    frames: list[ExtractedFrame],
     debug_dir: str | Path,
 ) -> None:
     debug_root = Path(debug_dir)
@@ -59,9 +66,9 @@ def export_debug_artifacts(
         stale_frame.unlink()
 
     copied_frames: list[Path] = []
-    for frame_path in frame_paths:
-        destination = task_debug_dir / frame_path.name
-        shutil.copy2(frame_path, destination)
+    for frame in frames:
+        destination = task_debug_dir / frame.path.name
+        shutil.copy2(frame.path, destination)
         copied_frames.append(destination)
 
     contact_sheet_path = debug_root / f"{task_name}_contact_sheet.jpg"
