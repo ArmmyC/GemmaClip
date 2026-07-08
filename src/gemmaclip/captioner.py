@@ -3,13 +3,15 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Mapping, Sequence
 from io import BytesIO
+import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
 from gemmaclip.frames import ExtractedFrame
 from gemmaclip.gemma_client import GemmaClient, GemmaConfig, load_gemma_config
-from gemmaclip.io import Task
+from gemmaclip.io import Task, safe_task_id
 from gemmaclip.prompts import (
     EVIDENCE_SCHEMA,
     build_caption_system_prompt,
@@ -20,6 +22,31 @@ from gemmaclip.prompts import (
 
 LOGGER = logging.getLogger("gemmaclip.captioner")
 MAX_GEMMA_FRAMES = 12
+MAX_CAPTION_WORDS = 25
+SPECULATION_PATTERNS = (
+    re.compile(r"\blikely\b"),
+    re.compile(r"\bprobably\b"),
+    re.compile(r"\bmaybe\b"),
+    re.compile(r"\bappears to be\b"),
+    re.compile(r"\bseems to be\b"),
+)
+TECH_CLAIM_PATTERNS = (
+    re.compile(r"\bscript\b"),
+    re.compile(r"\bscripts\b"),
+    re.compile(r"\bcoding\b"),
+    re.compile(r"\bcode\b"),
+    re.compile(r"\bprogramming\b"),
+    re.compile(r"\brunning scripts\b"),
+)
+TECH_EVIDENCE_PATTERNS = (
+    re.compile(r"\bscript\b"),
+    re.compile(r"\bscripts\b"),
+    re.compile(r"\bcoding\b"),
+    re.compile(r"\bcode\b"),
+    re.compile(r"\bprogramming\b"),
+    re.compile(r"\bterminal\b"),
+    re.compile(r"\bcommand line\b"),
+)
 
 
 def generate_captions(
@@ -27,6 +54,7 @@ def generate_captions(
     frames: Sequence[ExtractedFrame],
     *,
     dry_run: bool = False,
+    debug_dir: str | Path | None = None,
     env: Mapping[str, str] | None = None,
     logger: logging.Logger | None = None,
     client_factory: Callable[[GemmaConfig], GemmaClient] = GemmaClient,
@@ -55,6 +83,8 @@ def generate_captions(
                 temperature=0.1,
             )
         )
+        if debug_dir is not None:
+            write_evidence_debug_file(task.task_id, selected_frames, evidence, debug_dir)
         caption_messages = build_caption_messages(task.task_id, task.styles, evidence)
         captions = normalize_captions(
             client.chat_completion_json(
@@ -62,6 +92,7 @@ def generate_captions(
                 temperature=0.7,
             ),
             task.styles,
+            evidence,
         )
         return captions
     except Exception as exc:
@@ -103,6 +134,40 @@ def build_fallback_captions(styles: Sequence[str]) -> dict[str, str]:
         ),
     }
     return {style: templates[style] for style in styles}
+
+
+def build_evidence_debug_payload(
+    task_id: str,
+    selected_frames: Sequence[ExtractedFrame],
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "selected_frame_count": len(selected_frames),
+        "selected_frames": [
+            {
+                "path": str(frame.path),
+                "timestamp_seconds": frame.timestamp_seconds,
+            }
+            for frame in selected_frames
+        ],
+        "evidence": evidence,
+    }
+
+
+def write_evidence_debug_file(
+    task_id: str,
+    selected_frames: Sequence[ExtractedFrame],
+    evidence: dict[str, Any],
+    debug_dir: str | Path,
+) -> Path:
+    output_path = Path(debug_dir) / f"{safe_task_id(task_id)}_evidence.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(build_evidence_debug_payload(task_id, selected_frames, evidence), indent=2),
+        encoding="utf-8",
+    )
+    return output_path
 
 
 def select_gemma_frames(
@@ -192,14 +257,52 @@ def normalize_evidence(payload: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def normalize_captions(payload: dict[str, Any], styles: Sequence[str]) -> dict[str, str]:
+def normalize_captions(
+    payload: dict[str, Any],
+    styles: Sequence[str],
+    evidence: dict[str, Any],
+) -> dict[str, str]:
     captions: dict[str, str] = {}
     for style in styles:
         value = payload.get(style)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"Model response did not include a valid caption for style {style}.")
-        captions[style] = value.strip()
+        caption = value.strip()
+        validate_caption(caption, style, evidence)
+        captions[style] = caption
     return captions
+
+
+def validate_caption(caption: str, style: str, evidence: dict[str, Any]) -> None:
+    lowered = caption.strip().lower()
+    for pattern in SPECULATION_PATTERNS:
+        if pattern.search(lowered):
+            raise ValueError("Caption contains a banned speculation phrase.")
+
+    if len(caption.split()) > MAX_CAPTION_WORDS:
+        raise ValueError("Caption exceeds the maximum allowed word count.")
+
+    if style == "humorous_tech" and _contains_unsupported_tech_claim(lowered, evidence):
+        raise ValueError("humorous_tech caption contains an unsupported coding or scripting claim.")
+
+
+def _contains_unsupported_tech_claim(caption: str, evidence: dict[str, Any]) -> bool:
+    if not any(pattern.search(caption) for pattern in TECH_CLAIM_PATTERNS):
+        return False
+    evidence_text = _flatten_evidence_text(evidence)
+    return not any(pattern.search(evidence_text) for pattern in TECH_EVIDENCE_PATTERNS)
+
+
+def _flatten_evidence_text(evidence: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    for value in evidence.values():
+        if isinstance(value, list):
+            parts.extend(str(item).strip().lower() for item in value if str(item).strip())
+        else:
+            text = str(value).strip().lower()
+            if text:
+                parts.append(text)
+    return " ".join(parts)
 
 
 def _load_pillow_image():

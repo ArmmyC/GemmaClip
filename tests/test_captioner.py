@@ -3,10 +3,12 @@ from __future__ import annotations
 from io import BytesIO
 
 from gemmaclip.captioner import (
+    build_evidence_debug_payload,
     build_fallback_captions,
     build_placeholder_captions,
     generate_captions,
     make_resized_jpeg_bytes,
+    normalize_captions,
     select_gemma_frames,
 )
 from gemmaclip.frames import ExtractedFrame
@@ -44,6 +46,21 @@ def make_frame_sequence(tmp_path, count: int) -> list[ExtractedFrame]:
         frame_path.write_bytes(f"jpeg-{index}".encode("ascii"))
         frames.append(ExtractedFrame(path=frame_path, timestamp_seconds=float(index)))
     return frames
+
+
+def make_evidence(**overrides):
+    evidence = {
+        "scene": "office scene",
+        "main_subjects": ["person"],
+        "actions": ["working"],
+        "setting": "office",
+        "visible_objects": ["desk", "computer"],
+        "mood": "neutral",
+        "camera_notes": "static shot",
+        "uncertain_details": [],
+    }
+    evidence.update(overrides)
+    return evidence
 
 
 def test_parse_json_object_extracts_wrapped_json():
@@ -106,6 +123,27 @@ def test_select_gemma_frames_preserves_chronological_order(tmp_path):
     assert [frame.timestamp_seconds for frame in selected] == sorted(
         frame.timestamp_seconds for frame in selected
     )
+
+
+def test_build_evidence_debug_payload_contains_task_id_selected_frames_and_evidence(tmp_path):
+    frames = make_frame_sequence(tmp_path, 2)
+    evidence = make_evidence(actions=["walking"])
+
+    payload = build_evidence_debug_payload("clip-1", frames, evidence)
+
+    assert payload["task_id"] == "clip-1"
+    assert payload["selected_frame_count"] == 2
+    assert payload["selected_frames"] == [
+        {
+            "path": str(frames[0].path),
+            "timestamp_seconds": 0.0,
+        },
+        {
+            "path": str(frames[1].path),
+            "timestamp_seconds": 1.0,
+        },
+    ]
+    assert payload["evidence"] == evidence
 
 
 def test_load_gemma_config_uses_fireworks_fallbacks():
@@ -201,6 +239,47 @@ def test_load_gemma_config_prefers_gemma_values_over_fireworks_fallbacks():
     assert config.api_key == "gemma-key"
     assert config.base_url == "https://example.com/custom/v1"
     assert config.model == "accounts/123/deployments/456"
+
+
+def test_normalize_captions_rejects_banned_speculation_phrase():
+    try:
+        normalize_captions(
+            {"formal": "A person probably waits beside traffic.", "sarcastic": "A worker stands by while traffic does the usual thing."},
+            ("formal", "sarcastic"),
+            make_evidence(),
+        )
+    except ValueError as exc:
+        assert "banned speculation phrase" in str(exc)
+    else:
+        raise AssertionError("Expected normalize_captions to reject banned speculation phrases.")
+
+
+def test_normalize_captions_rejects_overlong_caption():
+    overlong = "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentytfour twentytfive twentysix"
+
+    try:
+        normalize_captions(
+            {"formal": overlong, "sarcastic": "A worker stands quietly while the room acts extremely impressed by ordinary office activity."},
+            ("formal", "sarcastic"),
+            make_evidence(),
+        )
+    except ValueError as exc:
+        assert "maximum allowed word count" in str(exc)
+    else:
+        raise AssertionError("Expected normalize_captions to reject overlong captions.")
+
+
+def test_normalize_captions_rejects_unsupported_humorous_tech_script_claim():
+    try:
+        normalize_captions(
+            {"humorous_tech": "A worker watches traffic like a script rerun that forgot to deploy anything new today."},
+            ("humorous_tech",),
+            make_evidence(actions=["walking"]),
+        )
+    except ValueError as exc:
+        assert "unsupported coding or scripting claim" in str(exc)
+    else:
+        raise AssertionError("Expected normalize_captions to reject unsupported scripting claims.")
 
 
 def test_generate_captions_uses_placeholder_when_config_missing(tmp_path):

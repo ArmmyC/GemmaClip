@@ -96,7 +96,13 @@ def process_task(
             metadata.frame_count if metadata.frame_count is not None else "unknown",
             len(extracted_frames),
         )
-        captions = generate_captions(task, extracted_frames, dry_run=dry_run, logger=LOGGER)
+        captions = generate_captions(
+            task,
+            extracted_frames,
+            dry_run=dry_run,
+            debug_dir=debug_dir,
+            logger=LOGGER,
+        )
     except Exception as exc:
         LOGGER.warning("Task %s failed, writing fallback captions: %s", task.task_id, exc)
         captions = build_fallback_captions(task.styles)
