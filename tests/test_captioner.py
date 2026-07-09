@@ -95,7 +95,8 @@ def make_evidence(**overrides):
         "visible_objects": ["desk", "computer"],
         "mood": "neutral",
         "camera_notes": "static shot",
-        "uncertain_details": [],
+        "temporal_progression": "The person keeps working at the desk across the clip.",
+        "caption_focus": "person working at a desk",
     }
     evidence.update(overrides)
     return evidence
@@ -446,19 +447,35 @@ def test_google_request_config_includes_minimal_thinking_when_supported(tmp_path
     assert str(config_mapping["thinking_config"]["thinking_level"]).lower().endswith("minimal")
 
 
-def test_google_provider_uses_four_frames(tmp_path):
+def test_google_v7_provider_uses_six_frames(tmp_path):
     class FakeClient:
         prompt_text = ""
+        call_count = 0
 
         def __init__(self, _config):
             self._config = _config
 
         def chat_completion_text(self, messages, temperature, use_response_format=None):
-            FakeClient.prompt_text = next(
-                item["text"]
-                for item in messages[1]["content"]
-                if isinstance(item, dict) and item.get("type") == "text"
-            )
+            FakeClient.call_count += 1
+            if isinstance(messages[1]["content"], list):
+                FakeClient.prompt_text = next(
+                    item["text"]
+                    for item in messages[1]["content"]
+                    if isinstance(item, dict) and item.get("type") == "text"
+                )
+                return json.dumps(
+                    {
+                        "scene": "office scene",
+                        "main_subjects": ["worker"],
+                        "actions": ["standing"],
+                        "setting": "office",
+                        "visible_objects": ["desk"],
+                        "mood": "neutral",
+                        "camera_notes": "static shot",
+                        "temporal_progression": "The worker remains near the desk throughout the clip.",
+                        "caption_focus": "worker standing near a desk",
+                    }
+                )
             return json.dumps(
                 {
                     "formal": "A worker stands near a desk in a quiet office during a routine moment.",
@@ -477,7 +494,8 @@ def test_google_provider_uses_four_frames(tmp_path):
     )
 
     assert captions["formal"]
-    assert FakeClient.prompt_text.count("timestamp_seconds=") == 4
+    assert FakeClient.call_count == 2
+    assert FakeClient.prompt_text.count("timestamp_seconds=") == 6
 
 
 def test_fireworks_provider_still_uses_twelve_frames_and_inline_data_urls(tmp_path):
@@ -488,7 +506,7 @@ def test_fireworks_provider_still_uses_twelve_frames_and_inline_data_urls(tmp_pa
     assert all(item["image_url"]["url"].startswith("data:image/jpeg;base64,") for item in image_parts)
 
 
-def test_google_fast_mode_uploads_exactly_one_contact_sheet_per_task(tmp_path):
+def test_google_v7_uploads_exactly_one_contact_sheet_for_evidence(tmp_path):
     class FakeGoogleResponse:
         def __init__(self, text: str):
             self.text = text
@@ -519,6 +537,10 @@ def test_google_fast_mode_uploads_exactly_one_contact_sheet_per_task(tmp_path):
 
         def generate_content(self, **kwargs):
             self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return FakeGoogleResponse(
+                    '{"scene":"office scene","main_subjects":["worker"],"actions":["standing"],"setting":"office","visible_objects":["desk"],"mood":"neutral","camera_notes":"static shot","temporal_progression":"The worker stays near the desk across the clip.","caption_focus":"worker standing near a desk"}'
+                )
             return FakeGoogleResponse(
                 '{"formal":"A worker stands near a desk in a quiet office during a routine moment.","sarcastic":"A worker performs thrilling office stillness at an admirably ordinary pace today."}'
             )
@@ -545,10 +567,10 @@ def test_google_fast_mode_uploads_exactly_one_contact_sheet_per_task(tmp_path):
 
     assert captions["formal"]
     assert len(sdk_client.files.upload_calls) == 1
-    assert len(sdk_client.models.calls) == 1
+    assert len(sdk_client.models.calls) == 2
 
 
-def test_google_fast_mode_invalid_direct_json_triggers_one_text_repair_call(tmp_path):
+def test_google_v7_caption_json_failure_triggers_one_text_repair_call(tmp_path):
     class FakeGoogleResponse:
         def __init__(self, text: str):
             self.text = text
@@ -578,6 +600,10 @@ def test_google_fast_mode_invalid_direct_json_triggers_one_text_repair_call(tmp_
         def generate_content(self, **kwargs):
             self.calls.append(kwargs)
             if len(self.calls) == 1:
+                return FakeGoogleResponse(
+                    '{"scene":"office scene","main_subjects":["worker"],"actions":["standing"],"setting":"office","visible_objects":["desk"],"mood":"neutral","camera_notes":"static shot","temporal_progression":"The worker stays near the desk across the clip.","caption_focus":"worker standing near a desk"}'
+                )
+            if len(self.calls) == 2:
                 return FakeGoogleResponse("not valid json")
             return FakeGoogleResponse(
                 '{"formal":"A worker stands near a desk in a quiet office during a routine moment.","sarcastic":"A worker performs thrilling office stillness at an admirably ordinary pace today."}'
@@ -605,12 +631,133 @@ def test_google_fast_mode_invalid_direct_json_triggers_one_text_repair_call(tmp_
 
     first_contents = sdk_client.models.calls[0]["contents"]
     second_contents = sdk_client.models.calls[1]["contents"]
+    third_contents = sdk_client.models.calls[2]["contents"]
 
     assert captions["formal"]
     assert len(sdk_client.files.upload_calls) == 1
-    assert len(sdk_client.models.calls) == 2
+    assert len(sdk_client.models.calls) == 3
     assert any(getattr(item, "marker", "") == "uploaded-file" for item in first_contents if not isinstance(item, str))
     assert all(isinstance(item, str) for item in second_contents)
+    assert all(isinstance(item, str) for item in third_contents)
+
+
+def test_google_v7_evidence_failure_falls_back_to_v6_direct_mode(tmp_path):
+    class FakeGoogleResponse:
+        def __init__(self, text: str):
+            self.text = text
+
+    class FakeGoogleFile:
+        def __init__(self, name: str):
+            self.name = name
+            self.uri = f"gs://gemini/{name}"
+            self.mime_type = "image/jpeg"
+            self.marker = "uploaded-file"
+
+    class FakeGoogleFiles:
+        def __init__(self):
+            self.upload_calls: list[tuple[object, object]] = []
+
+        def upload(self, *, file, config=None):
+            self.upload_calls.append((file, config))
+            return FakeGoogleFile(f"files/{len(self.upload_calls)}")
+
+        def delete(self, *, name, config=None):
+            return {"deleted": name}
+
+    class FakeGoogleModels:
+        def __init__(self):
+            self.calls: list[dict[str, object]] = []
+
+        def generate_content(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return FakeGoogleResponse("{}")
+            return FakeGoogleResponse(
+                '{"formal":"A worker stands near a desk in a quiet office during a routine moment.","sarcastic":"A worker performs thrilling office stillness at an admirably ordinary pace today."}'
+            )
+
+    class FakeGoogleSdkClient:
+        def __init__(self):
+            self.files = FakeGoogleFiles()
+            self.models = FakeGoogleModels()
+
+    sdk_client = FakeGoogleSdkClient()
+
+    def google_factory(config):
+        return GoogleGeminiClient(config, client=sdk_client)
+
+    captions = generate_captions(
+        make_task(),
+        make_valid_frame_sequence(tmp_path, 12),
+        env={
+            "GEMINI_API_KEY": "gemini-key",
+            "GEMMACLIP_DISABLE_VERIFIER": "true",
+        },
+        client_factory=google_factory,
+    )
+
+    assert captions["formal"]
+    assert len(sdk_client.models.calls) == 2
+    assert len(sdk_client.files.upload_calls) == 2
+
+
+def test_google_v7_low_remaining_time_uses_v6_direct_mode(tmp_path):
+    class FakeGoogleResponse:
+        def __init__(self, text: str):
+            self.text = text
+
+    class FakeGoogleFile:
+        def __init__(self, name: str):
+            self.name = name
+            self.uri = f"gs://gemini/{name}"
+            self.mime_type = "image/jpeg"
+            self.marker = "uploaded-file"
+
+    class FakeGoogleFiles:
+        def __init__(self):
+            self.upload_calls: list[tuple[object, object]] = []
+
+        def upload(self, *, file, config=None):
+            self.upload_calls.append((file, config))
+            return FakeGoogleFile(f"files/{len(self.upload_calls)}")
+
+        def delete(self, *, name, config=None):
+            return {"deleted": name}
+
+    class FakeGoogleModels:
+        def __init__(self):
+            self.calls: list[dict[str, object]] = []
+
+        def generate_content(self, **kwargs):
+            self.calls.append(kwargs)
+            return FakeGoogleResponse(
+                '{"formal":"A worker stands near a desk in a quiet office during a routine moment.","sarcastic":"A worker performs thrilling office stillness at an admirably ordinary pace today."}'
+            )
+
+    class FakeGoogleSdkClient:
+        def __init__(self):
+            self.files = FakeGoogleFiles()
+            self.models = FakeGoogleModels()
+
+    sdk_client = FakeGoogleSdkClient()
+
+    def google_factory(config):
+        return GoogleGeminiClient(config, client=sdk_client)
+
+    captions = generate_captions(
+        make_task(),
+        make_valid_frame_sequence(tmp_path, 12),
+        env={
+            "GEMINI_API_KEY": "gemini-key",
+            "GEMMACLIP_DISABLE_VERIFIER": "true",
+        },
+        client_factory=google_factory,
+        remaining_seconds=100.0,
+    )
+
+    assert captions["formal"]
+    assert len(sdk_client.files.upload_calls) == 1
+    assert len(sdk_client.models.calls) == 1
 
 
 def test_fireworks_provider_still_uses_old_evidence_caption_behavior(tmp_path):
@@ -1285,13 +1432,27 @@ def test_generate_captions_uses_evidence_based_fallback_after_repeated_caption_f
 
 def test_google_caption_calls_use_response_format_false(tmp_path):
     class FakeClient:
-        caption_flags: list[bool | None] = []
+        call_flags: list[bool | None] = []
 
         def __init__(self, _config):
             self._config = _config
 
         def chat_completion_text(self, messages, temperature, use_response_format=None):
-            FakeClient.caption_flags.append(use_response_format)
+            FakeClient.call_flags.append(use_response_format)
+            if isinstance(messages[1]["content"], list):
+                return json.dumps(
+                    {
+                        "scene": "office scene",
+                        "main_subjects": ["worker"],
+                        "actions": ["standing"],
+                        "setting": "office",
+                        "visible_objects": ["desk"],
+                        "mood": "neutral",
+                        "camera_notes": "static shot",
+                        "temporal_progression": "The worker stays near the desk across the clip.",
+                        "caption_focus": "worker standing near a desk",
+                    }
+                )
             return json.dumps(
                 {
                     "formal": "A worker stands near a desk in a quiet office during a routine moment.",
@@ -1309,7 +1470,7 @@ def test_google_caption_calls_use_response_format_false(tmp_path):
         client_factory=FakeClient,
     )
 
-    assert FakeClient.caption_flags == [False]
+    assert FakeClient.call_flags == [False, False]
 
 
 def test_generate_captions_uses_placeholder_when_config_missing(tmp_path):

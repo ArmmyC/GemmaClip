@@ -92,6 +92,7 @@ def process_task(
     dry_run: bool = False,
     frame_strategy: str = DEFAULT_FRAME_STRATEGY,
     env: Mapping[str, str] | None = None,
+    remaining_seconds: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
         values = env if env is not None else os.environ
@@ -125,6 +126,7 @@ def process_task(
             debug_dir=debug_dir,
             env=values,
             logger=LOGGER,
+            remaining_seconds=remaining_seconds,
         )
     except Exception as exc:
         LOGGER.warning("Task %s failed, writing fallback captions: %s", task.task_id, exc)
@@ -165,6 +167,7 @@ def process_tasks(
             remaining_task_count=remaining_task_count,
             max_runtime_seconds=max_runtime_seconds,
             now_fn=now_fn,
+            logger=LOGGER,
         ):
             LOGGER.warning(
                 "Runtime budget is low; filling remaining %s task(s) with fallback captions.",
@@ -176,6 +179,7 @@ def process_tasks(
             write_results(progress_results, output_path)
             return progress_results
 
+        remaining_seconds = max(0.0, max_runtime_seconds - max(0.0, now_fn() - active_start_time))
         result, manifest_entry = process_task(
             task,
             workdir=workdir,
@@ -183,6 +187,7 @@ def process_tasks(
             dry_run=dry_run,
             frame_strategy=frame_strategy,
             env=env,
+            remaining_seconds=remaining_seconds,
         )
         completed_results[task.task_id] = result
         if manifest_entry is not None:

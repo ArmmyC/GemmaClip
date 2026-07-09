@@ -32,16 +32,18 @@ from gemmaclip.prompts import (
     build_direct_caption_user_prompt,
     build_evidence_system_prompt,
     build_evidence_user_prompt,
+    build_google_visual_evidence_user_prompt,
     build_verifier_system_prompt,
     build_verifier_user_prompt,
 )
 
 LOGGER = logging.getLogger("gemmaclip.captioner")
 MAX_GEMMA_FRAMES = 12
-MAX_GOOGLE_EVIDENCE_FRAMES = 4
+MAX_GOOGLE_EVIDENCE_FRAMES = 6
 MAX_CAPTION_WORDS = 25
 MAX_CAPTION_ATTEMPTS = 3
 GOOGLE_CONTACT_SHEET_CELL_MAX_SIDE = 384
+GOOGLE_DESCRIPTION_FIRST_MIN_REMAINING_SECONDS = 120.0
 BANNED_SPECULATION_PHRASES = (
     "likely",
     "probably",
@@ -114,6 +116,7 @@ def generate_captions(
     env: Mapping[str, str] | None = None,
     logger: logging.Logger | None = None,
     client_factory: Callable[[Any], Any] = create_model_client,
+    remaining_seconds: float | None = None,
 ) -> dict[str, str]:
     active_logger = logger or LOGGER
 
@@ -146,6 +149,7 @@ def generate_captions(
             logger=active_logger,
             client_factory=client_factory,
             model_config=config.text_model_config(),
+            remaining_seconds=remaining_seconds,
         )
 
     try:
@@ -364,6 +368,27 @@ def build_google_evidence_messages(task_id: str, frames: Sequence[ExtractedFrame
     ]
 
 
+def build_google_contact_sheet_evidence_messages(
+    task_id: str,
+    frames: Sequence[ExtractedFrame],
+    contact_sheet_path: str | Path,
+) -> list[dict[str, Any]]:
+    return [
+        {"role": "system", "content": build_evidence_system_prompt()},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": build_google_visual_evidence_user_prompt(task_id, frames)},
+                {
+                    "type": "image_file",
+                    "path": str(contact_sheet_path),
+                    "mime_type": "image/jpeg",
+                },
+            ],
+        },
+    ]
+
+
 def build_direct_caption_messages(
     task_id: str,
     styles: Sequence[str],
@@ -533,11 +558,12 @@ def generate_style_captions(
     client: Any,
     *,
     debug_dir: str | Path | None = None,
+    max_attempts: int = MAX_CAPTION_ATTEMPTS,
 ) -> dict[str, str]:
     last_response = ""
     last_error: Exception | None = None
 
-    for attempt in range(1, MAX_CAPTION_ATTEMPTS + 1):
+    for attempt in range(1, max_attempts + 1):
         messages = (
             build_caption_messages(task_id, styles, evidence)
             if attempt == 1
@@ -614,6 +640,25 @@ def generate_google_direct_captions(
         Path(contact_sheet_path).unlink(missing_ok=True)
 
 
+def generate_google_visual_evidence(
+    task_id: str,
+    frames: Sequence[ExtractedFrame],
+    client: Any,
+) -> dict[str, Any]:
+    contact_sheet_path = create_google_contact_sheet(frames)
+    try:
+        messages = build_google_contact_sheet_evidence_messages(task_id, frames, contact_sheet_path)
+        evidence_text = request_model_text(
+            client,
+            messages,
+            temperature=0.1,
+            use_response_format=False,
+        )
+        return extract_evidence_json(evidence_text)
+    finally:
+        Path(contact_sheet_path).unlink(missing_ok=True)
+
+
 def create_google_contact_sheet(frames: Sequence[ExtractedFrame]) -> Path:
     if not frames:
         raise ValueError("Cannot create a Google contact sheet without frames.")
@@ -623,15 +668,17 @@ def create_google_contact_sheet(frames: Sequence[ExtractedFrame]) -> Path:
     output_handle.close()
 
     cells = [_load_contact_sheet_cell(frame.path) for frame in frames[:MAX_GOOGLE_EVIDENCE_FRAMES]]
-    while len(cells) < 4:
+    columns = 3 if len(cells) > 4 else 2
+    rows = (len(cells) + columns - 1) // columns
+    while len(cells) < rows * columns:
         cells.append(Image.new("RGB", (GOOGLE_CONTACT_SHEET_CELL_MAX_SIDE, GOOGLE_CONTACT_SHEET_CELL_MAX_SIDE), color="white"))
 
     cell_width = max(cell.width for cell in cells)
     cell_height = max(cell.height for cell in cells)
-    sheet = Image.new("RGB", (cell_width * 2, cell_height * 2), color="white")
-    for index, cell in enumerate(cells[:4]):
-        row = index // 2
-        column = index % 2
+    sheet = Image.new("RGB", (cell_width * columns, cell_height * rows), color="white")
+    for index, cell in enumerate(cells):
+        row = index // columns
+        column = index % columns
         offset_x = column * cell_width + (cell_width - cell.width) // 2
         offset_y = row * cell_height + (cell_height - cell.height) // 2
         sheet.paste(cell, (offset_x, offset_y))
@@ -650,10 +697,10 @@ def build_visual_heuristic_captions(
         return None
 
     templates = {
-        "formal": f"The {brightness} {tone} scene {action_phrase} across the clip in a clear visible sequence.",
-        "sarcastic": f"The {brightness} {tone} scene {action_phrase}, delivering exactly the measured drama everyone requested.",
-        "humorous_tech": f"The {brightness} {tone} scene {action_phrase}, like a calm system buffering one polite update.",
-        "humorous_non_tech": f"The {brightness} {tone} scene {action_phrase}, like the day quietly practicing one small joke.",
+        "formal": f"A {brightness} {tone} clip {action_phrase} across the sequence without a major shift in visual focus.",
+        "sarcastic": f"A {brightness} {tone} clip {action_phrase}, providing exactly the measured excitement nobody urgently requested today.",
+        "humorous_tech": f"A {brightness} {tone} clip {action_phrase}, like a calm buffer handling one more polite little update.",
+        "humorous_non_tech": f"A {brightness} {tone} clip {action_phrase}, like the day quietly rehearsing one small neighborhood joke.",
     }
     return {style: templates[style] for style in styles}
 
@@ -770,16 +817,16 @@ def build_evidence_based_captions(
 
     templates = {
         "formal": (
-            f"The scene shows {subject_text} {action_text} in {setting_text}, with {object_text} visible nearby."
+            f"The clip captures {subject_text} {action_text} in {setting_text}, with {object_text} visible nearby throughout."
         ),
         "sarcastic": (
-            f"The scene shows {subject_text} {action_text} in {setting_text}, because apparently even ordinary moments deserve polite fanfare."
+            f"The clip captures {subject_text} {action_text} in {setting_text}, delivering exactly the drama this task was clearly craving."
         ),
         "humorous_tech": (
-            f"The scene shows {subject_text} {action_text} in {setting_text}, like a calm CPU handling one more background task."
+            f"The clip captures {subject_text} {action_text} in {setting_text}, like a calm CPU handling one more background task."
         ),
         "humorous_non_tech": (
-            f"The scene shows {subject_text} {action_text} in {setting_text}, like the day quietly rehearsed one small joke."
+            f"The clip captures {subject_text} {action_text} in {setting_text}, like the day quietly rehearsed one small joke."
         ),
     }
     return {style: templates[style] for style in styles}
@@ -928,12 +975,11 @@ def select_google_evidence_frames(
         return ordered_frames
 
     last_index = len(ordered_frames) - 1
+    ratios = (0.05, 0.20, 0.35, 0.55, 0.75, 0.95)
     selected_indices = sorted(
         {
-            0,
-            round(last_index / 3),
-            round((2 * last_index) / 3),
-            last_index,
+            min(last_index, max(0, round(last_index * ratio)))
+            for ratio in ratios[:max_frames]
         }
     )
     return [ordered_frames[index] for index in selected_indices]
@@ -948,10 +994,92 @@ def _generate_google_fast_captions(
     logger: logging.Logger,
     client_factory: Callable[[Any], Any],
     model_config: Any,
+    remaining_seconds: float | None,
 ) -> dict[str, str]:
-    selected_frames = select_google_evidence_frames(select_gemma_frames(frames, max_frames=MAX_GEMMA_FRAMES))
+    selected_frames = select_google_evidence_frames(frames)
     client = client_factory(model_config)
 
+    if remaining_seconds is not None and remaining_seconds < GOOGLE_DESCRIPTION_FIRST_MIN_REMAINING_SECONDS:
+        logger.info(
+            "Task %s using Google direct mode because remaining time is %.1fs.",
+            task.task_id,
+            remaining_seconds,
+        )
+        return _generate_google_direct_mode_captions(
+            task,
+            selected_frames,
+            client,
+            env,
+            debug_dir=debug_dir,
+            logger=logger,
+        )
+
+    try:
+        evidence = generate_google_visual_evidence(task.task_id, selected_frames, client)
+        if debug_dir is not None:
+            write_evidence_debug_file(task.task_id, selected_frames, evidence, debug_dir)
+    except Exception as exc:
+        logger.warning(
+            "Task %s failed during Google visual evidence generation, falling back to direct mode: %s",
+            task.task_id,
+            exc,
+        )
+        return _generate_google_direct_mode_captions(
+            task,
+            selected_frames,
+            client,
+            env,
+            debug_dir=debug_dir,
+            logger=logger,
+        )
+
+    used_evidence_fallback = False
+    try:
+        captions = generate_style_captions(
+            task.task_id,
+            task.styles,
+            evidence,
+            client,
+            debug_dir=debug_dir,
+            max_attempts=2,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Task %s failed during Google caption generation after evidence extraction, using evidence-based fallback captions: %s",
+            task.task_id,
+            exc,
+        )
+        captions = build_evidence_based_captions(task.styles, evidence)
+        used_evidence_fallback = True
+
+    if debug_dir is not None:
+        write_captions_debug_file(task.task_id, captions, debug_dir, suffix="raw")
+
+    final_captions = captions
+    if not used_evidence_fallback and not _verifier_disabled(env):
+        final_captions = maybe_verify_captions(
+            task,
+            captions,
+            evidence,
+            client,
+            env,
+            debug_dir=debug_dir,
+        )
+
+    if debug_dir is not None:
+        write_captions_debug_file(task.task_id, final_captions, debug_dir, suffix="verified")
+    return final_captions
+
+
+def _generate_google_direct_mode_captions(
+    task: Task,
+    selected_frames: Sequence[ExtractedFrame],
+    client: Any,
+    env: Mapping[str, str],
+    *,
+    debug_dir: str | Path | None,
+    logger: logging.Logger,
+) -> dict[str, str]:
     used_heuristic_fallback = False
     try:
         captions = generate_google_direct_captions(

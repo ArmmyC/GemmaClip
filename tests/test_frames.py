@@ -137,7 +137,7 @@ def test_aks_lite_extract_frames_integration(tmp_path, monkeypatch):
     assert not (task_dir / "_candidates").exists()
 
 
-def test_google_fast_mode_extracts_only_four_frames(tmp_path, monkeypatch):
+def test_google_v7_fast_mode_extracts_only_six_frames(tmp_path, monkeypatch):
     extracted_widths: list[int | None] = []
 
     def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None):
@@ -156,12 +156,12 @@ def test_google_fast_mode_extracts_only_four_frames(tmp_path, monkeypatch):
         google_fast=True,
     )
 
-    assert len(frames) == 4
-    assert [frame.path.name for frame in frames] == ["frame_001.jpg", "frame_002.jpg", "frame_003.jpg", "frame_004.jpg"]
-    assert extracted_widths == [512, 512, 512, 512]
+    assert len(frames) == 6
+    assert [frame.path.name for frame in frames] == [f"frame_{index:03d}.jpg" for index in range(1, 7)]
+    assert extracted_widths == [512, 512, 512, 512, 512, 512]
 
 
-def test_google_fast_mode_uses_four_timestamp_seeks_based_on_duration(tmp_path, monkeypatch):
+def test_google_v7_fast_mode_uses_six_timestamp_seeks_based_on_duration(tmp_path, monkeypatch):
     extracted_timestamps: list[float] = []
 
     def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None):
@@ -181,4 +181,4 @@ def test_google_fast_mode_uses_four_timestamp_seeks_based_on_duration(tmp_path, 
     )
 
     assert [frame.timestamp_seconds for frame in frames] == extracted_timestamps
-    assert extracted_timestamps == [5.0, 35.0, 65.0, 95.0]
+    assert extracted_timestamps == [5.0, 20.0, 35.0, 55.0, 75.0, 95.0]

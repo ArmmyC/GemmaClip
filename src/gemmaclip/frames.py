@@ -12,9 +12,9 @@ from gemmaclip.video import VideoMetadata
 DEFAULT_FRAMES_DIR = Path("/tmp/gemmaclip/frames")
 DEFAULT_FRAME_STRATEGY = "aks-lite"
 MAX_GEMMA_FRAMES = 12
-GOOGLE_FAST_FRAME_COUNT = 4
+GOOGLE_FAST_FRAME_COUNT = 6
 GOOGLE_FAST_FRAME_WIDTH = 512
-GOOGLE_FAST_FRAME_RATIOS = (0.05, 0.35, 0.65, 0.95)
+GOOGLE_FAST_FRAME_RATIOS = (0.05, 0.20, 0.35, 0.55, 0.75, 0.95)
 VALID_FRAME_STRATEGIES = {"uniform", "aks-lite"}
 
 
@@ -430,7 +430,10 @@ def _google_fast_timestamps(duration_seconds: float) -> list[float]:
         raise ValueError("Video duration must be positive.")
 
     upper_bound = max(duration_seconds - 0.001, 0.0)
-    return [min(duration_seconds * ratio, upper_bound) for ratio in GOOGLE_FAST_FRAME_RATIOS[:GOOGLE_FAST_FRAME_COUNT]]
+    return [
+        round(min(duration_seconds * ratio, upper_bound), 3)
+        for ratio in GOOGLE_FAST_FRAME_RATIOS[:GOOGLE_FAST_FRAME_COUNT]
+    ]
 
 
 def _extract_frame(
