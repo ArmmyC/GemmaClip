@@ -6,6 +6,7 @@ from io import BytesIO
 import httpx
 
 from gemmaclip.captioner import (
+    build_caption_messages,
     build_evidence_messages,
     build_google_evidence_messages,
     build_evidence_debug_payload,
@@ -18,6 +19,7 @@ from gemmaclip.captioner import (
     generate_evidence,
     make_resized_jpeg_bytes,
     maybe_verify_captions,
+    normalize_evidence,
     normalize_captions,
     select_google_evidence_frames,
     select_gemma_frames,
@@ -31,6 +33,8 @@ from gemmaclip.gemma_client import (
     DEFAULT_GEMMA_VISION_MODEL,
     DEFAULT_GEMMA_MAX_TOKENS,
     DEFAULT_GOOGLE_GEMMA_MODEL,
+    GOOGLE_IMAGE_MAX_SIDE,
+    GOOGLE_IMAGE_QUALITY,
     DEFAULT_PROVIDER_FIREWORKS,
     DEFAULT_PROVIDER_GOOGLE,
     DEFAULT_PROVIDER_OPENROUTER,
@@ -45,6 +49,7 @@ from gemmaclip.gemma_client import (
     extract_message_text,
     load_gemma_config,
     parse_json_object,
+    _make_google_resized_jpeg_bytes,
 )
 from gemmaclip.io import Task
 
@@ -100,6 +105,13 @@ def make_evidence(**overrides):
         "camera_notes": "static shot",
         "temporal_progression": "The person keeps working at the desk across the clip.",
         "caption_focus": "person working at a desk",
+        "verified_description": "A person works at a desk in an office. The framing stays focused on the same routine action.",
+        "possible_misreads_to_avoid": ["Do not assume the person is speaking.", "Do not invent brand names."],
+        "style_hooks": {
+            "sarcastic": "The action stays steady enough for dry understatement.",
+            "humorous_tech": "The routine pace can support a light CPU or buffering metaphor.",
+            "humorous_non_tech": "The calm repetition can support gentle everyday humor.",
+        },
     }
     evidence.update(overrides)
     return evidence
@@ -195,6 +207,33 @@ def test_build_evidence_debug_payload_contains_task_id_selected_frames_and_evide
         },
     ]
     assert payload["evidence"] == evidence
+
+
+def test_normalize_evidence_accepts_new_fields():
+    normalized = normalize_evidence(
+        {
+            "scene": "office scene",
+            "main_subjects": ["worker"],
+            "actions": ["standing"],
+            "setting": "office",
+            "visible_objects": ["desk"],
+            "mood": "neutral",
+            "camera_notes": "static shot",
+            "temporal_progression": "The worker stays near the desk.",
+            "caption_focus": "worker standing by a desk",
+            "verified_description": "A worker stands near a desk in an office. The framing keeps that person centered.",
+            "possible_misreads_to_avoid": ["Do not assume the worker is talking."],
+            "style_hooks": {
+                "sarcastic": "The stillness can support dry irony.",
+                "humorous_tech": "The scene can support a calm buffering metaphor.",
+                "humorous_non_tech": "The stillness can support a gentle everyday joke.",
+            },
+        }
+    )
+
+    assert normalized["verified_description"].startswith("A worker stands near a desk")
+    assert normalized["possible_misreads_to_avoid"] == ["Do not assume the worker is talking."]
+    assert normalized["style_hooks"]["humorous_tech"] == "The scene can support a calm buffering metaphor."
 
 
 def test_load_gemma_config_uses_fireworks_fallbacks():
@@ -466,6 +505,21 @@ def test_google_request_config_includes_minimal_thinking_when_supported(tmp_path
     assert str(config_mapping["thinking_config"]["thinking_level"]).lower().endswith("minimal")
 
 
+def test_google_upload_resize_uses_1536_max_side_and_quality_85(tmp_path):
+    from PIL import Image
+
+    image_path = tmp_path / "large.jpg"
+    Image.new("RGB", (3000, 1800), color="green").save(image_path, format="JPEG", quality=95)
+
+    resized_bytes = _make_google_resized_jpeg_bytes(image_path)
+
+    with Image.open(BytesIO(resized_bytes)) as resized_image:
+        assert max(resized_image.size) <= 1536
+
+    assert GOOGLE_IMAGE_MAX_SIDE == 1536
+    assert GOOGLE_IMAGE_QUALITY == 85
+
+
 def test_openrouter_image_file_is_converted_to_base64_image_url(tmp_path):
     from PIL import Image
 
@@ -516,6 +570,18 @@ def test_openrouter_image_file_is_converted_to_base64_image_url(tmp_path):
     assert content[0] == {"type": "text", "text": "describe this"}
     assert content[1]["type"] == "image_url"
     assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_caption_prompt_includes_verified_description_and_style_hooks():
+    messages = build_caption_messages(
+        "clip-1",
+        ("formal", "sarcastic"),
+        make_evidence(),
+    )
+
+    assert "verified_description" in messages[1]["content"]
+    assert "style_hooks" in messages[1]["content"]
+    assert "Prioritize evidence fields in this order: verified_description" in messages[1]["content"]
 
 
 def test_openrouter_text_only_caption_call_works():
@@ -993,6 +1059,131 @@ def test_openrouter_evidence_failure_falls_back_to_google_v7(tmp_path):
     assert GoogleFallbackClient.call_count == 2
 
 
+def test_openrouter_caption_failure_falls_back_to_google_caption_generation_from_evidence(tmp_path, caplog):
+    class OpenRouterClientStub:
+        def __init__(self, config):
+            self._config = config
+
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            if isinstance(messages[1]["content"], list):
+                return json.dumps(
+                    {
+                        "scene": "office scene",
+                        "main_subjects": ["worker"],
+                        "actions": ["standing"],
+                        "setting": "office",
+                        "visible_objects": ["desk"],
+                        "mood": "neutral",
+                        "camera_notes": "static shot",
+                        "temporal_progression": "The worker stays near the desk across the clip.",
+                        "caption_focus": "worker standing near a desk",
+                    }
+                )
+            return "."
+
+    class GoogleCaptionClientStub:
+        call_count = 0
+
+        def __init__(self, config):
+            self._config = config
+
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            GoogleCaptionClientStub.call_count += 1
+            return json.dumps(
+                {
+                    "formal": "A worker stands by a desk in a quiet office while the clip keeps its attention there.",
+                    "sarcastic": "A worker stands by a desk in a quiet office, heroically sustaining this blockbuster level of movement.",
+                }
+            )
+
+    created_providers: list[str] = []
+
+    def client_factory(config):
+        created_providers.append(config.provider)
+        if config.provider == DEFAULT_PROVIDER_OPENROUTER:
+            return OpenRouterClientStub(config)
+        if config.provider == DEFAULT_PROVIDER_GOOGLE:
+            return GoogleCaptionClientStub(config)
+        raise AssertionError(f"Unexpected provider: {config.provider}")
+
+    caplog.set_level("WARNING")
+    captions = generate_captions(
+        make_task(),
+        make_valid_frame_sequence(tmp_path, 12),
+        env={
+            "GEMMACLIP_PROVIDER": "openrouter",
+            "OPENROUTER_API_KEY": "openrouter-key",
+            "OPENROUTER_MODEL": "openrouter/model",
+            "GEMINI_API_KEY": "gemini-key",
+            "GEMMACLIP_DISABLE_VERIFIER": "true",
+        },
+        client_factory=client_factory,
+    )
+
+    assert captions["formal"] == "A worker stands by a desk in a quiet office while the clip keeps its attention there."
+    assert captions["sarcastic"] == "A worker stands by a desk in a quiet office, heroically sustaining this blockbuster level of movement."
+    assert created_providers == [DEFAULT_PROVIDER_OPENROUTER, DEFAULT_PROVIDER_GOOGLE]
+    assert GoogleCaptionClientStub.call_count == 1
+    assert "OpenRouter caption failed, falling back to Google caption generation from OpenRouter evidence" in caplog.text
+
+
+def test_openrouter_and_google_caption_failure_uses_evidence_based_fallback(tmp_path):
+    class OpenRouterClientStub:
+        def __init__(self, config):
+            self._config = config
+
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            if isinstance(messages[1]["content"], list):
+                return json.dumps(
+                    {
+                        "scene": "office scene",
+                        "main_subjects": ["worker"],
+                        "actions": ["standing"],
+                        "setting": "office",
+                        "visible_objects": ["desk"],
+                        "mood": "neutral",
+                        "camera_notes": "static shot",
+                        "temporal_progression": "The worker stays near the desk across the clip.",
+                        "caption_focus": "worker standing near a desk",
+                    }
+                )
+            return "."
+
+    class GoogleCaptionFailingClientStub:
+        def __init__(self, config):
+            self._config = config
+
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            return "."
+
+    created_providers: list[str] = []
+
+    def client_factory(config):
+        created_providers.append(config.provider)
+        if config.provider == DEFAULT_PROVIDER_OPENROUTER:
+            return OpenRouterClientStub(config)
+        if config.provider == DEFAULT_PROVIDER_GOOGLE:
+            return GoogleCaptionFailingClientStub(config)
+        raise AssertionError(f"Unexpected provider: {config.provider}")
+
+    captions = generate_captions(
+        make_task(),
+        make_valid_frame_sequence(tmp_path, 12),
+        env={
+            "GEMMACLIP_PROVIDER": "openrouter",
+            "OPENROUTER_API_KEY": "openrouter-key",
+            "OPENROUTER_MODEL": "openrouter/model",
+            "GEMINI_API_KEY": "gemini-key",
+            "GEMMACLIP_DISABLE_VERIFIER": "true",
+        },
+        client_factory=client_factory,
+    )
+
+    assert captions["formal"] == "The clip captures worker standing in office, with desk visible nearby throughout."
+    assert "video could not be fully processed" not in captions["formal"].lower()
+    assert created_providers == [DEFAULT_PROVIDER_OPENROUTER, DEFAULT_PROVIDER_GOOGLE]
+
+
 def test_fireworks_provider_still_uses_old_evidence_caption_behavior(tmp_path):
     class FakeClient:
         construction_index = 0
@@ -1233,7 +1424,12 @@ def test_normalize_captions_softens_expanded_banned_phrases():
 
 
 def test_normalize_captions_rejects_overlong_caption():
-    overlong = "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentytfour twentytfive twentysix"
+    overlong = (
+        "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
+        "seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentytfour twentytfive "
+        "twentysix twentyseven twentyeight twentynine thirty thirtyone thirtytwo thirtythree thirtyfour "
+        "thirtyfive thirtysix thirtyseven thirtyeight thirtynine forty fortyone"
+    )
 
     captions = normalize_captions(
         {"formal": overlong, "sarcastic": "A worker stands quietly while the room acts extremely impressed by ordinary office activity."},
@@ -1241,8 +1437,25 @@ def test_normalize_captions_rejects_overlong_caption():
         make_evidence(),
     )
 
-    assert len(captions["formal"].split()) == 25
-    assert "twentysix" not in captions["formal"]
+    assert len(captions["formal"].split()) == 40
+    assert "fortyone" not in captions["formal"]
+
+
+def test_normalize_captions_does_not_trim_caption_below_35_words():
+    caption = (
+        "A worker stands beside a desk in a quiet office while the camera follows the same deliberate routine, "
+        "showing steady movements, nearby monitors, and a calm workspace without inventing extra drama, hidden "
+        "dialogue, or unrelated action elsewhere."
+    )
+
+    captions = normalize_captions(
+        {"formal": caption},
+        ("formal",),
+        make_evidence(),
+    )
+
+    assert captions["formal"] == caption
+    assert len(captions["formal"].split()) >= 35
 
 
 def test_normalize_captions_rejects_unsupported_humorous_tech_script_claim():

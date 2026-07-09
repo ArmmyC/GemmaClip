@@ -42,7 +42,7 @@ from gemmaclip.prompts import (
 LOGGER = logging.getLogger("gemmaclip.captioner")
 MAX_GEMMA_FRAMES = 12
 MAX_GOOGLE_EVIDENCE_FRAMES = 6
-MAX_CAPTION_WORDS = 25
+MAX_CAPTION_WORDS = 40
 MAX_CAPTION_ATTEMPTS = 3
 GOOGLE_CONTACT_SHEET_CELL_MAX_SIDE = 384
 GOOGLE_DESCRIPTION_FIRST_MIN_REMAINING_SECONDS = 120.0
@@ -697,7 +697,7 @@ def create_google_contact_sheet(frames: Sequence[ExtractedFrame]) -> Path:
         offset_y = row * cell_height + (cell_height - cell.height) // 2
         sheet.paste(cell, (offset_x, offset_y))
 
-    sheet.save(output_path, format="JPEG", quality=75, optimize=True)
+    sheet.save(output_path, format="JPEG", quality=85, optimize=True)
     return output_path
 
 
@@ -727,6 +727,8 @@ def normalize_evidence(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(value, list):
                 value = []
             normalized[key] = [str(item).strip() for item in value if str(item).strip()]
+        elif isinstance(default, dict):
+            normalized[key] = _normalize_nested_evidence_object(value, default)
         else:
             normalized[key] = str(value).strip() if value is not None else ""
     return normalized
@@ -874,6 +876,10 @@ def _has_useful_evidence(evidence: Mapping[str, Any]) -> bool:
             if any(str(item).strip() for item in value):
                 return True
             continue
+        if isinstance(value, Mapping):
+            if _has_useful_evidence(value):
+                return True
+            continue
         if str(value).strip():
             return True
     return False
@@ -926,6 +932,8 @@ def _flatten_evidence_text(evidence: Mapping[str, Any]) -> str:
     for value in evidence.values():
         if isinstance(value, list):
             parts.extend(str(item).strip().lower() for item in value if str(item).strip())
+        elif isinstance(value, Mapping):
+            parts.append(_flatten_evidence_text(value))
         else:
             text = str(value).strip().lower()
             if text:
@@ -978,6 +986,15 @@ def _list_phrase(value: Any, *, fallback: str) -> str:
         return f"{', '.join(cleaned[:-1])}, and {cleaned[-1]}"
     cleaned_value = str(value).strip()
     return cleaned_value or fallback
+
+
+def _normalize_nested_evidence_object(value: Any, default: Mapping[str, Any]) -> dict[str, Any]:
+    raw_mapping = value if isinstance(value, Mapping) else {}
+    normalized: dict[str, Any] = {}
+    for nested_key, nested_default in default.items():
+        nested_value = raw_mapping.get(nested_key, nested_default)
+        normalized[nested_key] = str(nested_value).strip() if nested_value is not None else ""
+    return normalized
 
 
 def select_google_evidence_frames(
@@ -1147,6 +1164,7 @@ def _generate_openrouter_experiment_captions(
 ) -> dict[str, str]:
     selected_frames = select_google_evidence_frames(frames)
     client = client_factory(model_config)
+    caption_client = client
 
     if remaining_seconds is not None and remaining_seconds < GOOGLE_DESCRIPTION_FIRST_MIN_REMAINING_SECONDS:
         logger.info(
@@ -1205,18 +1223,43 @@ def _generate_openrouter_experiment_captions(
             task.task_id,
             task.styles,
             evidence,
-            client,
+            caption_client,
             debug_dir=debug_dir,
             max_attempts=2,
         )
     except Exception as exc:
-        logger.warning(
-            "Task %s failed during OpenRouter caption generation after evidence extraction, using evidence-based fallback captions: %s",
-            task.task_id,
-            exc,
-        )
-        captions = build_evidence_based_captions(task.styles, evidence)
-        used_evidence_fallback = True
+        if google_fallback_config is not None:
+            logger.warning(
+                "Task %s OpenRouter caption failed, falling back to Google caption generation from OpenRouter evidence: %s",
+                task.task_id,
+                exc,
+            )
+            try:
+                caption_client = client_factory(google_fallback_config.text_model_config())
+                captions = generate_style_captions(
+                    task.task_id,
+                    task.styles,
+                    evidence,
+                    caption_client,
+                    debug_dir=debug_dir,
+                    max_attempts=2,
+                )
+            except Exception as google_exc:
+                logger.warning(
+                    "Task %s failed during Google caption generation from OpenRouter evidence, using evidence-based fallback captions: %s",
+                    task.task_id,
+                    google_exc,
+                )
+                captions = build_evidence_based_captions(task.styles, evidence)
+                used_evidence_fallback = True
+        else:
+            logger.warning(
+                "Task %s failed during OpenRouter caption generation after evidence extraction, using evidence-based fallback captions: %s",
+                task.task_id,
+                exc,
+            )
+            captions = build_evidence_based_captions(task.styles, evidence)
+            used_evidence_fallback = True
 
     if debug_dir is not None:
         write_captions_debug_file(task.task_id, captions, debug_dir, suffix="raw")
@@ -1227,7 +1270,7 @@ def _generate_openrouter_experiment_captions(
             task,
             captions,
             evidence,
-            client,
+            caption_client,
             env,
             debug_dir=debug_dir,
         )
