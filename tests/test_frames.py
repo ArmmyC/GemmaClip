@@ -87,7 +87,7 @@ def test_aks_lite_first_and_last_bins_are_represented(tmp_path):
 
 
 def test_uniform_strategy_still_works(tmp_path, monkeypatch):
-    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg"):
+    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None):
         image = Image.new("RGB", (80, 45), color="blue")
         image.save(output_path, format="JPEG", quality=85)
 
@@ -107,7 +107,7 @@ def test_uniform_strategy_still_works(tmp_path, monkeypatch):
 
 
 def test_aks_lite_extract_frames_integration(tmp_path, monkeypatch):
-    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg"):
+    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None):
         red = int((timestamp * 37) % 255)
         green = int((timestamp * 61) % 255)
         blue = int((timestamp * 89) % 255)
@@ -135,3 +135,50 @@ def test_aks_lite_extract_frames_integration(tmp_path, monkeypatch):
     assert all(frame.path.exists() for frame in frames)
     assert [frame.path.name for frame in frames] == [f"frame_{index:03d}.jpg" for index in range(1, len(frames) + 1)]
     assert not (task_dir / "_candidates").exists()
+
+
+def test_google_fast_mode_extracts_only_four_frames(tmp_path, monkeypatch):
+    extracted_widths: list[int | None] = []
+
+    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None):
+        extracted_widths.append(output_width)
+        image = Image.new("RGB", (160, 90), color="green")
+        image.save(output_path, format="JPEG", quality=85)
+
+    monkeypatch.setattr("gemmaclip.frames._extract_frame", fake_extract_frame)
+
+    frames = extract_frames(
+        "clip-1",
+        tmp_path / "video.mp4",
+        VideoMetadata(duration_seconds=100.0, fps=24.0, width=1920, height=1080, frame_count=2400),
+        strategy="aks-lite",
+        destination_root=tmp_path / "frames",
+        google_fast=True,
+    )
+
+    assert len(frames) == 4
+    assert [frame.path.name for frame in frames] == ["frame_001.jpg", "frame_002.jpg", "frame_003.jpg", "frame_004.jpg"]
+    assert extracted_widths == [512, 512, 512, 512]
+
+
+def test_google_fast_mode_uses_four_timestamp_seeks_based_on_duration(tmp_path, monkeypatch):
+    extracted_timestamps: list[float] = []
+
+    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None):
+        extracted_timestamps.append(timestamp)
+        image = Image.new("RGB", (160, 90), color="purple")
+        image.save(output_path, format="JPEG", quality=85)
+
+    monkeypatch.setattr("gemmaclip.frames._extract_frame", fake_extract_frame)
+
+    frames = extract_frames(
+        "clip-1",
+        tmp_path / "video.mp4",
+        VideoMetadata(duration_seconds=100.0, fps=24.0, width=1920, height=1080, frame_count=2400),
+        strategy="aks-lite",
+        destination_root=tmp_path / "frames",
+        google_fast=True,
+    )
+
+    assert [frame.timestamp_seconds for frame in frames] == extracted_timestamps
+    assert extracted_timestamps == [5.0, 35.0, 65.0, 95.0]

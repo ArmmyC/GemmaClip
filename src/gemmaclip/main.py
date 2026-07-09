@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from gemmaclip.captioner import build_fallback_captions, generate_captions
 from gemmaclip.download import download_video
 from gemmaclip.frames import DEFAULT_FRAME_STRATEGY, VALID_FRAME_STRATEGIES, export_debug_artifacts, extract_frames
+from gemmaclip.gemma_client import DEFAULT_PROVIDER_GOOGLE, load_gemma_config
 from gemmaclip.io import Task, make_frame_manifest_entry, read_tasks, write_frame_manifest, write_results
 from gemmaclip.validate import validate_results
 from gemmaclip.video import probe_video
@@ -17,9 +19,10 @@ from gemmaclip.video import probe_video
 DEFAULT_INPUT_PATH = "/input/tasks.json"
 DEFAULT_OUTPUT_PATH = "/output/results.json"
 DEFAULT_WORKDIR = "/tmp/gemmaclip"
-DEFAULT_MAX_RUNTIME_SECONDS = 540.0
-DEFAULT_ESTIMATED_SECONDS_PER_TASK = 25.0
-FINAL_WRITE_BUFFER_SECONDS = 15.0
+DEFAULT_MAX_RUNTIME_SECONDS = 570.0
+MIN_NEXT_TASK_BUDGET_SECONDS = 45.0
+MAX_NEXT_TASK_BUDGET_SECONDS = 90.0
+FINAL_WRITE_BUFFER_SECONDS = 20.0
 
 LOGGER = logging.getLogger("gemmaclip")
 
@@ -88,9 +91,14 @@ def process_task(
     debug_dir: Path | None = None,
     dry_run: bool = False,
     frame_strategy: str = DEFAULT_FRAME_STRATEGY,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
-        video_path = download_video(task, destination_dir=workdir / "videos")
+        values = env if env is not None else os.environ
+        config = None if dry_run else load_gemma_config(values)
+        use_google_fast_frames = bool(config is not None and config.provider == DEFAULT_PROVIDER_GOOGLE)
+
+        video_path = download_video(task)
         metadata = probe_video(video_path)
         extracted_frames = extract_frames(
             task.task_id,
@@ -98,6 +106,7 @@ def process_task(
             metadata,
             strategy=frame_strategy,
             destination_root=workdir / "frames",
+            google_fast=use_google_fast_frames,
         )
         manifest_entry = make_frame_manifest_entry(task.task_id, video_path, extracted_frames, metadata)
         if debug_dir is not None:
@@ -114,6 +123,7 @@ def process_task(
             extracted_frames,
             dry_run=dry_run,
             debug_dir=debug_dir,
+            env=values,
             logger=LOGGER,
         )
     except Exception as exc:
@@ -141,6 +151,7 @@ def process_tasks(
     max_runtime_seconds: float = DEFAULT_MAX_RUNTIME_SECONDS,
     start_time: float | None = None,
     now_fn=time.monotonic,
+    env: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     active_start_time = now_fn() if start_time is None else start_time
     frame_manifest: list[dict[str, Any]] = []
@@ -171,6 +182,7 @@ def process_tasks(
             debug_dir=debug_dir,
             dry_run=dry_run,
             frame_strategy=frame_strategy,
+            env=env,
         )
         completed_results[task.task_id] = result
         if manifest_entry is not None:
@@ -213,24 +225,37 @@ def should_fill_remaining_with_fallbacks(
     remaining_task_count: int,
     max_runtime_seconds: float,
     now_fn=time.monotonic,
+    logger: logging.Logger | None = None,
 ) -> bool:
+    active_logger = logger or LOGGER
     if remaining_task_count <= 0:
         return False
 
     elapsed_seconds = max(0.0, now_fn() - start_time)
     remaining_seconds = max_runtime_seconds - elapsed_seconds
-    if remaining_seconds <= FINAL_WRITE_BUFFER_SECONDS:
-        return True
+    next_task_budget = _estimate_next_task_budget(elapsed_seconds, completed_count)
+    should_stop = remaining_seconds <= next_task_budget + FINAL_WRITE_BUFFER_SECONDS
+    active_logger.info(
+        "Runtime guard: elapsed=%.1fs remaining=%.1fs completed=%s remaining_tasks=%s next_task_budget=%.1fs fill_remaining=%s",
+        elapsed_seconds,
+        remaining_seconds,
+        completed_count,
+        remaining_task_count,
+        next_task_budget,
+        should_stop,
+    )
+    return should_stop
 
-    estimated_seconds_per_task = DEFAULT_ESTIMATED_SECONDS_PER_TASK
-    if completed_count > 0:
-        estimated_seconds_per_task = max(
-            DEFAULT_ESTIMATED_SECONDS_PER_TASK,
-            elapsed_seconds / completed_count,
-        )
 
-    required_seconds = estimated_seconds_per_task * remaining_task_count + FINAL_WRITE_BUFFER_SECONDS
-    return remaining_seconds <= required_seconds
+def _estimate_next_task_budget(elapsed_seconds: float, completed_count: int) -> float:
+    if completed_count <= 0:
+        return MIN_NEXT_TASK_BUDGET_SECONDS
+
+    average_seconds = elapsed_seconds / completed_count
+    return min(
+        MAX_NEXT_TASK_BUDGET_SECONDS,
+        max(MIN_NEXT_TASK_BUDGET_SECONDS, average_seconds),
+    )
 
 
 if __name__ == "__main__":

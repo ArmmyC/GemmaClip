@@ -12,6 +12,9 @@ from gemmaclip.video import VideoMetadata
 DEFAULT_FRAMES_DIR = Path("/tmp/gemmaclip/frames")
 DEFAULT_FRAME_STRATEGY = "aks-lite"
 MAX_GEMMA_FRAMES = 12
+GOOGLE_FAST_FRAME_COUNT = 4
+GOOGLE_FAST_FRAME_WIDTH = 512
+GOOGLE_FAST_FRAME_RATIOS = (0.05, 0.35, 0.65, 0.95)
 VALID_FRAME_STRATEGIES = {"uniform", "aks-lite"}
 
 
@@ -56,7 +59,17 @@ def extract_frames(
     strategy: str = DEFAULT_FRAME_STRATEGY,
     destination_root: Path = DEFAULT_FRAMES_DIR,
     ffmpeg_binary: str = "ffmpeg",
+    google_fast: bool = False,
 ) -> list[ExtractedFrame]:
+    if google_fast:
+        return extract_google_fast_frames(
+            task_id,
+            video_path,
+            metadata,
+            destination_root=destination_root,
+            ffmpeg_binary=ffmpeg_binary,
+        )
+
     if strategy not in VALID_FRAME_STRATEGIES:
         raise ValueError(f"Unsupported frame strategy: {strategy}")
 
@@ -75,6 +88,29 @@ def extract_frames(
         metadata,
         destination_root=destination_root,
         ffmpeg_binary=ffmpeg_binary,
+    )
+
+
+def extract_google_fast_frames(
+    task_id: str,
+    video_path: str | Path,
+    metadata: VideoMetadata,
+    destination_root: Path = DEFAULT_FRAMES_DIR,
+    ffmpeg_binary: str = "ffmpeg",
+    max_width: int = GOOGLE_FAST_FRAME_WIDTH,
+) -> list[ExtractedFrame]:
+    video_file = Path(video_path)
+    destination_dir = destination_root / safe_task_id(task_id)
+    _prepare_destination_dir(destination_dir)
+
+    timestamps = _google_fast_timestamps(metadata.duration_seconds)
+    return _extract_frames_at_timestamps(
+        video_file,
+        destination_dir,
+        timestamps,
+        prefix="frame",
+        ffmpeg_binary=ffmpeg_binary,
+        output_width=max_width,
     )
 
 
@@ -253,6 +289,7 @@ def _extract_frames_at_timestamps(
     *,
     prefix: str,
     ffmpeg_binary: str,
+    output_width: int | None = None,
 ) -> list[ExtractedFrame]:
     destination_dir.mkdir(parents=True, exist_ok=True)
     for stale_frame in destination_dir.glob("*.jpg"):
@@ -261,7 +298,13 @@ def _extract_frames_at_timestamps(
     frames: list[ExtractedFrame] = []
     for index, timestamp in enumerate(timestamps, start=1):
         output_path = destination_dir / f"{prefix}_{index:03d}.jpg"
-        _extract_frame(video_path, output_path, timestamp, ffmpeg_binary=ffmpeg_binary)
+        _extract_frame(
+            video_path,
+            output_path,
+            timestamp,
+            ffmpeg_binary=ffmpeg_binary,
+            output_width=output_width,
+        )
         frames.append(ExtractedFrame(path=output_path, timestamp_seconds=timestamp))
     return frames
 
@@ -382,11 +425,20 @@ def _uniform_timestamps(duration_seconds: float, frame_count: int) -> list[float
     return timestamps
 
 
+def _google_fast_timestamps(duration_seconds: float) -> list[float]:
+    if duration_seconds <= 0:
+        raise ValueError("Video duration must be positive.")
+
+    upper_bound = max(duration_seconds - 0.001, 0.0)
+    return [min(duration_seconds * ratio, upper_bound) for ratio in GOOGLE_FAST_FRAME_RATIOS[:GOOGLE_FAST_FRAME_COUNT]]
+
+
 def _extract_frame(
     video_path: Path,
     output_path: Path,
     timestamp: float,
     ffmpeg_binary: str = "ffmpeg",
+    output_width: int | None = None,
 ) -> None:
     command = [
         ffmpeg_binary,
@@ -401,8 +453,15 @@ def _extract_frame(
         "1",
         "-q:v",
         "2",
-        str(output_path),
     ]
+    if output_width is not None and output_width > 0:
+        command.extend(
+            [
+                "-vf",
+                f"scale={output_width}:{output_width}:force_original_aspect_ratio=decrease",
+            ]
+        )
+    command.append(str(output_path))
     try:
         subprocess.run(
             command,
