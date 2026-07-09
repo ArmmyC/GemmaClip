@@ -9,8 +9,10 @@ Runtime model configuration:
   - `fireworks` otherwise, using the existing Fireworks/Gemma path.
 - Override provider selection with `GEMMACLIP_PROVIDER=google` or `GEMMACLIP_PROVIDER=fireworks`.
 - Google provider:
+  - Uses Gemma 4 on the Gemini API
   - API keys: `GEMINI_API_KEY` or `GOOGLE_API_KEY`
-  - Default model: `gemini-3.5-flash`
+  - Default model: `gemma-4-26b-a4b-it`
+  - Optional stronger model: `gemma-4-31b-it`
   - Override with `GEMINI_MODEL`
 - Fireworks provider:
   - API keys: `GEMMA_API_KEY` or `FIREWORKS_API_KEY`

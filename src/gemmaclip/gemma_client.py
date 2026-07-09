@@ -19,7 +19,7 @@ DEFAULT_GEMMA_MODEL = "accounts/fireworks/models/gemma-4-31b-it"
 DEFAULT_GEMMA_VISION_MODEL = "accounts/fireworks/models/qwen3p7-plus"
 DEFAULT_GEMMA_TEXT_MODEL = "accounts/fireworks/models/deepseek-v4-pro"
 DEFAULT_FALLBACK_MODELS = ("accounts/fireworks/models/kimi-k2p6",)
-DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+DEFAULT_GOOGLE_GEMMA_MODEL = "gemma-4-26b-a4b-it"
 DEFAULT_GEMMA_MAX_TOKENS = 2048
 DEFAULT_TOP_K = 40
 DEFAULT_GOOGLE_MAX_RETRIES = 3
@@ -95,7 +95,7 @@ def load_gemma_config(env: Mapping[str, str] | None = None) -> GemmaConfig | Non
 
     if provider == DEFAULT_PROVIDER_GOOGLE:
         api_key = values.get("GEMINI_API_KEY", "").strip() or values.get("GOOGLE_API_KEY", "").strip()
-        model = values.get("GEMINI_MODEL", "").strip() or DEFAULT_GEMINI_MODEL
+        model = values.get("GEMINI_MODEL", "").strip() or DEFAULT_GOOGLE_GEMMA_MODEL
         if not api_key:
             return None
         return GemmaConfig(

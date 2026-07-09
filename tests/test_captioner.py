@@ -27,7 +27,7 @@ from gemmaclip.gemma_client import (
     DEFAULT_GEMMA_TEXT_MODEL,
     DEFAULT_GEMMA_VISION_MODEL,
     DEFAULT_GEMMA_MAX_TOKENS,
-    DEFAULT_GEMINI_MODEL,
+    DEFAULT_GOOGLE_GEMMA_MODEL,
     DEFAULT_PROVIDER_FIREWORKS,
     DEFAULT_PROVIDER_GOOGLE,
     DEFAULT_TOP_K,
@@ -200,8 +200,8 @@ def test_load_gemma_config_prefers_google_provider_when_gemini_key_exists():
     assert config.provider == DEFAULT_PROVIDER_GOOGLE
     assert config.api_key == "gemini-key"
     assert config.base_url is None
-    assert config.vision_model == DEFAULT_GEMINI_MODEL
-    assert config.text_model == DEFAULT_GEMINI_MODEL
+    assert config.vision_model == DEFAULT_GOOGLE_GEMMA_MODEL
+    assert config.text_model == DEFAULT_GOOGLE_GEMMA_MODEL
 
 
 def test_load_gemma_config_uses_gemma_model_override_for_both_roles():
@@ -279,7 +279,7 @@ def test_google_gemini_client_raw_text_response_is_parsed_into_evidence(tmp_path
         GemmaModelConfig(
             api_key="gemini-key",
             base_url=None,
-            model=DEFAULT_GEMINI_MODEL,
+            model=DEFAULT_GOOGLE_GEMMA_MODEL,
             provider=DEFAULT_PROVIDER_GOOGLE,
             fallback_models=(),
         ),
@@ -291,7 +291,7 @@ def test_google_gemini_client_raw_text_response_is_parsed_into_evidence(tmp_path
 
     assert evidence["scene"] == "garden path"
     assert evidence["main_subjects"] == ["cat"]
-    assert sdk_client.models.calls[0]["model"] == DEFAULT_GEMINI_MODEL
+    assert sdk_client.models.calls[0]["model"] == DEFAULT_GOOGLE_GEMMA_MODEL
     assert sdk_client.models.calls[0]["config"]["response_mime_type"] == "application/json"
     assert len(sdk_client.models.calls[0]["contents"]) == expected_message_count
 
