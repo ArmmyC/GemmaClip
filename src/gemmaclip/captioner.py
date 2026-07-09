@@ -106,6 +106,10 @@ def generate_captions(
         return build_placeholder_captions(task.styles)
 
     values = env if env is not None else os.environ
+    if _force_fallback(values):
+        active_logger.info("Task %s running with forced fallback mode.", task.task_id)
+        return build_fallback_captions(task.styles)
+
     config = load_gemma_config(env)
     if config is None:
         active_logger.warning(
@@ -579,3 +583,7 @@ def _load_pillow_image():
 
 def _verifier_disabled(env: Mapping[str, str]) -> bool:
     return env.get("GEMMACLIP_DISABLE_VERIFIER", "").strip().lower() == "true"
+
+
+def _force_fallback(env: Mapping[str, str]) -> bool:
+    return env.get("GEMMACLIP_FORCE_FALLBACK", "").strip().lower() == "true"

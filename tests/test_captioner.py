@@ -724,6 +724,21 @@ def test_generate_captions_uses_placeholder_when_config_missing(tmp_path):
     assert captions == build_placeholder_captions(("formal", "sarcastic"))
 
 
+def test_generate_captions_force_fallback_skips_api_client_construction(tmp_path):
+    class FailingClient:
+        def __init__(self, _config):
+            raise AssertionError("API client should not be constructed during forced fallback mode.")
+
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_FORCE_FALLBACK": "true"},
+        client_factory=FailingClient,
+    )
+
+    assert captions == build_fallback_captions(("formal", "sarcastic"))
+
+
 def test_generate_captions_falls_back_when_model_output_is_invalid(tmp_path):
     class FakeClient:
         def __init__(self, _config):
