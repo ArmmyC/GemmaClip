@@ -8,16 +8,28 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from io import BytesIO
 from pathlib import Path
+import tempfile
 from typing import Any
 
+from PIL import Image, ImageChops, ImageOps
+
 from gemmaclip.frames import ExtractedFrame
-from gemmaclip.gemma_client import DEFAULT_PROVIDER_GOOGLE, create_model_client, extract_json_objects, load_gemma_config
+from gemmaclip.gemma_client import (
+    DEFAULT_PROVIDER_FIREWORKS,
+    DEFAULT_PROVIDER_GOOGLE,
+    create_model_client,
+    extract_json_objects,
+    load_gemma_config,
+)
 from gemmaclip.io import Task, safe_task_id
 from gemmaclip.prompts import (
     EVIDENCE_SCHEMA,
     build_caption_repair_user_prompt,
     build_caption_system_prompt,
     build_caption_user_prompt,
+    build_direct_caption_repair_user_prompt,
+    build_direct_caption_system_prompt,
+    build_direct_caption_user_prompt,
     build_evidence_system_prompt,
     build_evidence_user_prompt,
     build_verifier_system_prompt,
@@ -29,6 +41,7 @@ MAX_GEMMA_FRAMES = 12
 MAX_GOOGLE_EVIDENCE_FRAMES = 4
 MAX_CAPTION_WORDS = 25
 MAX_CAPTION_ATTEMPTS = 3
+GOOGLE_CONTACT_SHEET_CELL_MAX_SIDE = 384
 BANNED_SPECULATION_PHRASES = (
     "likely",
     "probably",
@@ -124,18 +137,24 @@ def generate_captions(
         )
         return build_placeholder_captions(task.styles)
 
+    if config.provider == DEFAULT_PROVIDER_GOOGLE:
+        return _generate_google_fast_captions(
+            task,
+            frames,
+            debug_dir=debug_dir,
+            env=values,
+            logger=active_logger,
+            client_factory=client_factory,
+            model_config=config.text_model_config(),
+        )
+
     try:
         selected_frames = select_gemma_frames(frames, max_frames=MAX_GEMMA_FRAMES)
-        evidence_frames = (
-            select_google_evidence_frames(selected_frames)
-            if config.provider == DEFAULT_PROVIDER_GOOGLE
-            else list(selected_frames)
-        )
         vision_client = client_factory(config.vision_model_config())
         text_client = client_factory(config.text_model_config())
-        evidence = generate_evidence(task.task_id, evidence_frames, vision_client)
+        evidence = generate_evidence(task.task_id, selected_frames, vision_client)
         if debug_dir is not None:
-            write_evidence_debug_file(task.task_id, evidence_frames, evidence, debug_dir)
+            write_evidence_debug_file(task.task_id, selected_frames, evidence, debug_dir)
     except Exception as exc:
         active_logger.warning("Task %s failed during evidence generation, using fallback captions: %s", task.task_id, exc)
         return build_fallback_captions(task.styles)
@@ -345,6 +364,42 @@ def build_google_evidence_messages(task_id: str, frames: Sequence[ExtractedFrame
     ]
 
 
+def build_direct_caption_messages(
+    task_id: str,
+    styles: Sequence[str],
+    frames: Sequence[ExtractedFrame],
+    contact_sheet_path: str | Path,
+) -> list[dict[str, Any]]:
+    return [
+        {"role": "system", "content": build_direct_caption_system_prompt()},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": build_direct_caption_user_prompt(task_id, styles, frames)},
+                {
+                    "type": "image_file",
+                    "path": str(contact_sheet_path),
+                    "mime_type": "image/jpeg",
+                },
+            ],
+        },
+    ]
+
+
+def build_direct_caption_repair_messages(
+    task_id: str,
+    styles: Sequence[str],
+    previous_response: str,
+) -> list[dict[str, Any]]:
+    return [
+        {"role": "system", "content": build_direct_caption_system_prompt()},
+        {
+            "role": "user",
+            "content": build_direct_caption_repair_user_prompt(task_id, styles, previous_response),
+        },
+    ]
+
+
 def build_caption_messages(
     task_id: str,
     styles: Sequence[str],
@@ -413,7 +468,7 @@ def generate_evidence(
 ) -> dict[str, Any]:
     evidence_messages = (
         build_google_evidence_messages(task_id, frames)
-        if _model_provider(client) == DEFAULT_PROVIDER_GOOGLE
+        if _client_provider(client) == DEFAULT_PROVIDER_GOOGLE
         else build_evidence_messages(task_id, frames)
     )
     last_text = ""
@@ -514,6 +569,93 @@ def generate_style_captions(
     if last_error is not None:
         raise last_error
     raise ValueError("Caption generation failed without a usable model response.")
+
+
+def generate_google_direct_captions(
+    task_id: str,
+    styles: Sequence[str],
+    frames: Sequence[ExtractedFrame],
+    client: Any,
+    *,
+    debug_dir: str | Path | None = None,
+) -> dict[str, str]:
+    contact_sheet_path = create_google_contact_sheet(frames)
+    last_error: Exception | None = None
+    last_response = ""
+
+    try:
+        direct_messages = build_direct_caption_messages(task_id, styles, frames, contact_sheet_path)
+        direct_text = request_model_text(
+            client,
+            direct_messages,
+            temperature=0.4,
+            use_response_format=False,
+        )
+        last_response = direct_text
+        if debug_dir is not None:
+            write_caption_attempt_debug_file(task_id, direct_text, debug_dir, attempt_number=1)
+        try:
+            return normalize_captions(extract_caption_json(direct_text, styles), styles, {})
+        except ValueError as exc:
+            last_error = exc
+
+        repair_messages = build_direct_caption_repair_messages(task_id, styles, last_response)
+        repair_text = request_model_text(
+            client,
+            repair_messages,
+            temperature=0.1,
+            use_response_format=False,
+        )
+        last_response = repair_text
+        if debug_dir is not None:
+            write_caption_attempt_debug_file(task_id, repair_text, debug_dir, attempt_number=2)
+        return normalize_captions(extract_caption_json(repair_text, styles), styles, {})
+    finally:
+        Path(contact_sheet_path).unlink(missing_ok=True)
+
+
+def create_google_contact_sheet(frames: Sequence[ExtractedFrame]) -> Path:
+    if not frames:
+        raise ValueError("Cannot create a Google contact sheet without frames.")
+
+    output_handle = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+    output_path = Path(output_handle.name)
+    output_handle.close()
+
+    cells = [_load_contact_sheet_cell(frame.path) for frame in frames[:MAX_GOOGLE_EVIDENCE_FRAMES]]
+    while len(cells) < 4:
+        cells.append(Image.new("RGB", (GOOGLE_CONTACT_SHEET_CELL_MAX_SIDE, GOOGLE_CONTACT_SHEET_CELL_MAX_SIDE), color="white"))
+
+    cell_width = max(cell.width for cell in cells)
+    cell_height = max(cell.height for cell in cells)
+    sheet = Image.new("RGB", (cell_width * 2, cell_height * 2), color="white")
+    for index, cell in enumerate(cells[:4]):
+        row = index // 2
+        column = index % 2
+        offset_x = column * cell_width + (cell_width - cell.width) // 2
+        offset_y = row * cell_height + (cell_height - cell.height) // 2
+        sheet.paste(cell, (offset_x, offset_y))
+
+    sheet.save(output_path, format="JPEG", quality=75, optimize=True)
+    return output_path
+
+
+def build_visual_heuristic_captions(
+    styles: Sequence[str],
+    frames: Sequence[ExtractedFrame],
+) -> dict[str, str] | None:
+    try:
+        brightness, tone, action_phrase = _frame_heuristic_summary(frames)
+    except Exception:
+        return None
+
+    templates = {
+        "formal": f"The {brightness} {tone} scene {action_phrase} across the clip in a clear visible sequence.",
+        "sarcastic": f"The {brightness} {tone} scene {action_phrase}, delivering exactly the measured drama everyone requested.",
+        "humorous_tech": f"The {brightness} {tone} scene {action_phrase}, like a calm system buffering one polite update.",
+        "humorous_non_tech": f"The {brightness} {tone} scene {action_phrase}, like the day quietly practicing one small joke.",
+    }
+    return {style: templates[style] for style in styles}
 
 
 def normalize_evidence(payload: dict[str, Any]) -> dict[str, Any]:
@@ -730,15 +872,6 @@ def _flatten_evidence_text(evidence: Mapping[str, Any]) -> str:
     return " ".join(parts)
 
 
-def _load_pillow_image():
-    try:
-        from PIL import Image
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("Pillow is required for Gemma image payload resizing.") from exc
-
-    return Image
-
-
 def _is_invalid_caption_text(caption: str) -> bool:
     normalized = caption.strip().lower()
     condensed = re.sub(r"[\s_]+", "", normalized)
@@ -806,14 +939,131 @@ def select_google_evidence_frames(
     return [ordered_frames[index] for index in selected_indices]
 
 
+def _generate_google_fast_captions(
+    task: Task,
+    frames: Sequence[ExtractedFrame],
+    *,
+    debug_dir: str | Path | None,
+    env: Mapping[str, str],
+    logger: logging.Logger,
+    client_factory: Callable[[Any], Any],
+    model_config: Any,
+) -> dict[str, str]:
+    selected_frames = select_google_evidence_frames(select_gemma_frames(frames, max_frames=MAX_GEMMA_FRAMES))
+    client = client_factory(model_config)
+
+    used_heuristic_fallback = False
+    try:
+        captions = generate_google_direct_captions(
+            task.task_id,
+            task.styles,
+            selected_frames,
+            client,
+            debug_dir=debug_dir,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Task %s failed during Google fast caption generation, using heuristic fallback captions: %s",
+            task.task_id,
+            exc,
+        )
+        captions = build_visual_heuristic_captions(task.styles, selected_frames)
+        if captions is None:
+            return build_fallback_captions(task.styles)
+        used_heuristic_fallback = True
+
+    if debug_dir is not None:
+        write_captions_debug_file(task.task_id, captions, debug_dir, suffix="raw")
+
+    final_captions = captions
+    if not used_heuristic_fallback and not _verifier_disabled(env):
+        final_captions = maybe_verify_captions(
+            task,
+            captions,
+            {},
+            client,
+            env,
+            debug_dir=debug_dir,
+        )
+
+    if debug_dir is not None:
+        write_captions_debug_file(task.task_id, final_captions, debug_dir, suffix="verified")
+    return final_captions
+
+
+def _load_contact_sheet_cell(image_path: Path) -> Image.Image:
+    with Image.open(image_path) as image:
+        return ImageOps.contain(image.convert("RGB"), (GOOGLE_CONTACT_SHEET_CELL_MAX_SIDE, GOOGLE_CONTACT_SHEET_CELL_MAX_SIDE))
+
+
+def _frame_heuristic_summary(frames: Sequence[ExtractedFrame]) -> tuple[str, str, str]:
+    if not frames:
+        raise ValueError("Frames are required for heuristic captions.")
+
+    luminance_values: list[float] = []
+    red_values: list[float] = []
+    green_values: list[float] = []
+    blue_values: list[float] = []
+    previous_preview: Image.Image | None = None
+    motion_scores: list[float] = []
+
+    for frame in frames:
+        with Image.open(frame.path) as image:
+            preview = image.convert("RGB")
+            preview.thumbnail((96, 96))
+            pixels = list(preview.getdata())
+            if not pixels:
+                continue
+            red_values.append(sum(pixel[0] for pixel in pixels) / len(pixels))
+            green_values.append(sum(pixel[1] for pixel in pixels) / len(pixels))
+            blue_values.append(sum(pixel[2] for pixel in pixels) / len(pixels))
+            luminance_values.append(sum(sum(pixel) / 3.0 for pixel in pixels) / len(pixels))
+            if previous_preview is not None:
+                diff = ImageChops.difference(previous_preview, preview)
+                diff_pixels = list(diff.getdata())
+                motion_scores.append(sum(sum(pixel) / 3.0 for pixel in diff_pixels) / len(diff_pixels))
+            previous_preview = preview.copy()
+
+    if not luminance_values:
+        raise ValueError("Could not derive heuristic frame summary.")
+
+    brightness_value = sum(luminance_values) / len(luminance_values)
+    brightness = "bright" if brightness_value >= 170 else "darker" if brightness_value <= 100 else "mid-lit"
+
+    mean_red = sum(red_values) / len(red_values)
+    mean_green = sum(green_values) / len(green_values)
+    mean_blue = sum(blue_values) / len(blue_values)
+    if mean_green >= mean_red + 12 and mean_green >= mean_blue + 12:
+        tone = "green-toned"
+    elif mean_red >= mean_blue + 12 and mean_red >= mean_green + 6:
+        tone = "warm-toned"
+    elif mean_blue >= mean_red + 12 and mean_blue >= mean_green + 6:
+        tone = "cool-toned"
+    else:
+        tone = "neutral-toned"
+
+    mean_motion = (sum(motion_scores) / len(motion_scores)) if motion_scores else 0.0
+    action_phrase = "shows visible movement" if mean_motion >= 18.0 else "stays mostly steady"
+    return brightness, tone, action_phrase
+
+
 def _verifier_disabled(env: Mapping[str, str]) -> bool:
     return env.get("GEMMACLIP_DISABLE_VERIFIER", "").strip().lower() == "true"
 
 
-def _model_provider(client: Any) -> str:
+def _client_provider(client: Any) -> str:
     config = getattr(client, "_config", None)
-    provider = getattr(config, "provider", "")
-    return provider if isinstance(provider, str) else ""
+    provider = getattr(config, "provider", None)
+    return provider if isinstance(provider, str) else DEFAULT_PROVIDER_FIREWORKS
+
+
+def _load_pillow_image():
+    try:
+        from PIL import Image as PillowImage
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Pillow is required for Gemma image payload resizing.") from exc
+
+    return PillowImage
 
 
 def _force_placeholder(env: Mapping[str, str]) -> bool:

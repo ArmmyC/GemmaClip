@@ -43,6 +43,53 @@ def build_evidence_user_prompt(task_id: str, frames: Sequence[ExtractedFrame]) -
     )
 
 
+def build_direct_caption_system_prompt() -> str:
+    return (
+        "Describe visible video content faithfully from the provided contact sheet. Return only a JSON object with "
+        "exactly the requested style keys. No markdown. No explanation. No code fences. Each caption must be 12 to "
+        "22 words, must mention the main visible subject and the main visible action, and must stay specific to the "
+        "clip. formal must be factual. sarcastic must be dry and lightly ironic. humorous_tech must use a light tech "
+        "metaphor. humorous_non_tech must use everyday humor. Do not invent offscreen thoughts, future events, "
+        "dialogue, names, brands, or exact locations."
+    )
+
+
+def build_direct_caption_user_prompt(
+    task_id: str,
+    styles: Sequence[str],
+    frames: Sequence[ExtractedFrame],
+) -> str:
+    frame_lines = [
+        f"- {frame.path.name}: timestamp_seconds={frame.timestamp_seconds:.3f}"
+        for frame in frames
+    ]
+    return (
+        f"Task ID: {task_id}\n"
+        f"Requested styles: {', '.join(styles)}\n"
+        "The uploaded image is a 2x2 contact sheet built from four chronological video frames.\n"
+        "Order: top-left earliest, top-right about one-third, bottom-left about two-thirds, bottom-right latest.\n"
+        "Frame timestamps:\n"
+        f"{chr(10).join(frame_lines)}\n"
+        "Return only the final JSON object with exactly the requested style keys."
+    )
+
+
+def build_direct_caption_repair_user_prompt(
+    task_id: str,
+    styles: Sequence[str],
+    previous_response: str,
+) -> str:
+    return (
+        f"Task ID: {task_id}\n"
+        f"Requested styles: {', '.join(styles)}\n"
+        "The previous response was invalid. Return only a JSON object with exactly these style keys. "
+        "No markdown. No explanation. Each value must be a complete caption, not punctuation.\n"
+        "Previous raw model response:\n"
+        f"{previous_response}\n"
+        "Return only the corrected JSON object."
+    )
+
+
 def build_caption_system_prompt() -> str:
     return (
         "You are GemmaClip's caption writer. Describe visible content faithfully. Do not invent details that are not "

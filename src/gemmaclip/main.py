@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -16,34 +17,31 @@ from gemmaclip.video import probe_video
 DEFAULT_INPUT_PATH = "/input/tasks.json"
 DEFAULT_OUTPUT_PATH = "/output/results.json"
 DEFAULT_WORKDIR = "/tmp/gemmaclip"
+DEFAULT_MAX_RUNTIME_SECONDS = 540.0
+DEFAULT_ESTIMATED_SECONDS_PER_TASK = 25.0
+FINAL_WRITE_BUFFER_SECONDS = 15.0
 
 LOGGER = logging.getLogger("gemmaclip")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     configure_logging()
+    start_time = time.monotonic()
     args = parse_args(argv)
     try:
         tasks = read_tasks(args.input)
         workdir = Path(args.workdir).resolve()
         debug_dir = Path(args.debug_dir).resolve() if args.debug_dir else None
-        frame_manifest: list[dict[str, Any]] = []
-        results = []
-        for task in tasks:
-            result, manifest_entry = process_task(
-                task,
-                workdir=workdir,
-                debug_dir=debug_dir,
-                dry_run=args.dry_run,
-                frame_strategy=args.frame_strategy,
-            )
-            results.append(result)
-            if manifest_entry is not None:
-                frame_manifest.append(manifest_entry)
-
-        write_frame_manifest(frame_manifest, workdir / "frame_manifest.json")
-        validate_results(tasks, results)
-        write_results(results, args.output)
+        process_tasks(
+            tasks,
+            workdir=workdir,
+            output_path=args.output,
+            debug_dir=debug_dir,
+            dry_run=args.dry_run,
+            frame_strategy=args.frame_strategy,
+            max_runtime_seconds=args.max_runtime_seconds,
+            start_time=start_time,
+        )
     except Exception as exc:
         LOGGER.error("%s", exc)
         return 1
@@ -70,6 +68,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=sorted(VALID_FRAME_STRATEGIES),
         default=DEFAULT_FRAME_STRATEGY,
         help="Frame extraction strategy.",
+    )
+    parser.add_argument(
+        "--max-runtime-seconds",
+        type=float,
+        default=DEFAULT_MAX_RUNTIME_SECONDS,
+        help="Soft runtime budget used to switch remaining tasks to fallback captions before timeout.",
     )
     return parser.parse_args(argv)
 
@@ -124,6 +128,109 @@ def process_task(
         },
         manifest_entry,
     )
+
+
+def process_tasks(
+    tasks: Sequence[Task],
+    *,
+    workdir: Path,
+    output_path: str | Path,
+    debug_dir: Path | None = None,
+    dry_run: bool = False,
+    frame_strategy: str = DEFAULT_FRAME_STRATEGY,
+    max_runtime_seconds: float = DEFAULT_MAX_RUNTIME_SECONDS,
+    start_time: float | None = None,
+    now_fn=time.monotonic,
+) -> list[dict[str, Any]]:
+    active_start_time = now_fn() if start_time is None else start_time
+    frame_manifest: list[dict[str, Any]] = []
+    completed_results: dict[str, dict[str, Any]] = {}
+
+    for task in tasks:
+        remaining_task_count = len(tasks) - len(completed_results)
+        if should_fill_remaining_with_fallbacks(
+            active_start_time,
+            completed_count=len(completed_results),
+            remaining_task_count=remaining_task_count,
+            max_runtime_seconds=max_runtime_seconds,
+            now_fn=now_fn,
+        ):
+            LOGGER.warning(
+                "Runtime budget is low; filling remaining %s task(s) with fallback captions.",
+                remaining_task_count,
+            )
+            progress_results = build_progress_results(tasks, completed_results)
+            write_frame_manifest(frame_manifest, workdir / "frame_manifest.json")
+            validate_results(tasks, progress_results)
+            write_results(progress_results, output_path)
+            return progress_results
+
+        result, manifest_entry = process_task(
+            task,
+            workdir=workdir,
+            debug_dir=debug_dir,
+            dry_run=dry_run,
+            frame_strategy=frame_strategy,
+        )
+        completed_results[task.task_id] = result
+        if manifest_entry is not None:
+            frame_manifest.append(manifest_entry)
+
+        progress_results = build_progress_results(tasks, completed_results)
+        write_frame_manifest(frame_manifest, workdir / "frame_manifest.json")
+        validate_results(tasks, progress_results)
+        write_results(progress_results, output_path)
+
+    final_results = build_progress_results(tasks, completed_results)
+    write_frame_manifest(frame_manifest, workdir / "frame_manifest.json")
+    validate_results(tasks, final_results)
+    write_results(final_results, output_path)
+    return final_results
+
+
+def build_progress_results(
+    tasks: Sequence[Task],
+    completed_results: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for task in tasks:
+        if task.task_id in completed_results:
+            results.append(completed_results[task.task_id])
+            continue
+        results.append(
+            {
+                "task_id": task.task_id,
+                "captions": build_fallback_captions(task.styles),
+            }
+        )
+    return results
+
+
+def should_fill_remaining_with_fallbacks(
+    start_time: float,
+    *,
+    completed_count: int,
+    remaining_task_count: int,
+    max_runtime_seconds: float,
+    now_fn=time.monotonic,
+) -> bool:
+    if remaining_task_count <= 0:
+        return False
+
+    elapsed_seconds = max(0.0, now_fn() - start_time)
+    remaining_seconds = max_runtime_seconds - elapsed_seconds
+    if remaining_seconds <= FINAL_WRITE_BUFFER_SECONDS:
+        return True
+
+    estimated_seconds_per_task = DEFAULT_ESTIMATED_SECONDS_PER_TASK
+    if completed_count > 0:
+        estimated_seconds_per_task = max(
+            DEFAULT_ESTIMATED_SECONDS_PER_TASK,
+            elapsed_seconds / completed_count,
+        )
+
+    required_seconds = estimated_seconds_per_task * remaining_task_count + FINAL_WRITE_BUFFER_SECONDS
+    return remaining_seconds <= required_seconds
 
 
 if __name__ == "__main__":

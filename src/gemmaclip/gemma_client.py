@@ -25,7 +25,8 @@ DEFAULT_FALLBACK_MODELS = ("accounts/fireworks/models/kimi-k2p6",)
 DEFAULT_GOOGLE_GEMMA_MODEL = "gemma-4-26b-a4b-it"
 DEFAULT_GEMMA_MAX_TOKENS = 2048
 DEFAULT_TOP_K = 40
-DEFAULT_GOOGLE_MAX_RETRIES = 4
+DEFAULT_GOOGLE_MAX_RETRIES = 2
+DEFAULT_GOOGLE_RETRY_BACKOFF_SECONDS = (0.5, 1.0)
 GOOGLE_IMAGE_MAX_SIDE = 512
 GOOGLE_IMAGE_QUALITY = 75
 LOGGER = logging.getLogger("gemmaclip.gemma_client")
@@ -277,8 +278,9 @@ class GoogleGeminiClient:
         )
 
         last_error: Exception | None = None
+        max_attempts = DEFAULT_GOOGLE_MAX_RETRIES + 1
         try:
-            for attempt in range(DEFAULT_GOOGLE_MAX_RETRIES):
+            for attempt in range(max_attempts):
                 try:
                     response = self._client.models.generate_content(
                         model=self._config.model,
@@ -289,9 +291,11 @@ class GoogleGeminiClient:
                 except Exception as exc:  # pragma: no cover - vendor exceptions vary by SDK version
                     last_error = exc
                     status_code = _extract_exception_status_code(exc)
-                    if status_code is None or not _is_retryable_google_status(status_code) or attempt == DEFAULT_GOOGLE_MAX_RETRIES - 1:
+                    if status_code is None or not _is_retryable_google_status(status_code) or attempt == max_attempts - 1:
                         raise RuntimeError(f"Google Gemini request failed for model {self._config.model}: {exc}") from exc
-                    delay_seconds = float(2 ** attempt)
+                    delay_seconds = DEFAULT_GOOGLE_RETRY_BACKOFF_SECONDS[
+                        min(attempt, len(DEFAULT_GOOGLE_RETRY_BACKOFF_SECONDS) - 1)
+                    ]
                     LOGGER.warning(
                         "Google Gemini request for model %s failed with status %s; retrying in %.1fs.",
                         self._config.model,
