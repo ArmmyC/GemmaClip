@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from gemmaclip.frames import ExtractedFrame
-from gemmaclip.gemma_client import GemmaClient, GemmaModelConfig, extract_json_objects, load_gemma_config
+from gemmaclip.gemma_client import create_model_client, extract_json_objects, load_gemma_config
 from gemmaclip.io import Task, safe_task_id
 from gemmaclip.prompts import (
     EVIDENCE_SCHEMA,
@@ -97,7 +97,7 @@ def generate_captions(
     debug_dir: str | Path | None = None,
     env: Mapping[str, str] | None = None,
     logger: logging.Logger | None = None,
-    client_factory: Callable[[GemmaModelConfig], GemmaClient] = GemmaClient,
+    client_factory: Callable[[Any], Any] = create_model_client,
 ) -> dict[str, str]:
     active_logger = logger or LOGGER
 
@@ -106,6 +106,9 @@ def generate_captions(
         return build_placeholder_captions(task.styles)
 
     values = env if env is not None else os.environ
+    if _force_placeholder(values):
+        active_logger.info("Task %s running with forced placeholder mode.", task.task_id)
+        return build_placeholder_captions(task.styles)
     if _force_fallback(values):
         active_logger.info("Task %s running with forced fallback mode.", task.task_id)
         return build_fallback_captions(task.styles)
@@ -146,7 +149,7 @@ def generate_captions(
             write_captions_debug_file(task.task_id, final_captions, debug_dir, suffix="verified")
         return final_captions
     except Exception as exc:
-        active_logger.warning("Task %s failed during Gemma captioning, using fallback captions: %s", task.task_id, exc)
+        active_logger.warning("Task %s failed during model captioning, using fallback captions: %s", task.task_id, exc)
         return build_fallback_captions(task.styles)
 
 
@@ -331,7 +334,7 @@ def make_resized_jpeg_bytes(
 def generate_evidence(
     task_id: str,
     frames: Sequence[ExtractedFrame],
-    client: GemmaClient,
+    client: Any,
 ) -> dict[str, Any]:
     evidence_messages = build_evidence_messages(task_id, frames)
     last_text = ""
@@ -359,7 +362,7 @@ def generate_evidence(
 
 
 def request_model_text(
-    client: GemmaClient,
+    client: Any,
     messages: Sequence[Mapping[str, Any]],
     *,
     temperature: float,
@@ -450,7 +453,7 @@ def maybe_verify_captions(
     task: Task,
     captions: dict[str, str],
     evidence: dict[str, Any],
-    client: GemmaClient,
+    client: Any,
     env: Mapping[str, str],
     *,
     debug_dir: str | Path | None = None,
@@ -583,6 +586,10 @@ def _load_pillow_image():
 
 def _verifier_disabled(env: Mapping[str, str]) -> bool:
     return env.get("GEMMACLIP_DISABLE_VERIFIER", "").strip().lower() == "true"
+
+
+def _force_placeholder(env: Mapping[str, str]) -> bool:
+    return env.get("GEMMACLIP_FORCE_PLACEHOLDER", "").strip().lower() == "true"
 
 
 def _force_fallback(env: Mapping[str, str]) -> bool:

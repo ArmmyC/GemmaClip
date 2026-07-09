@@ -5,6 +5,7 @@ from io import BytesIO
 import httpx
 
 from gemmaclip.captioner import (
+    build_evidence_messages,
     build_evidence_debug_payload,
     build_fallback_captions,
     build_placeholder_captions,
@@ -12,6 +13,7 @@ from gemmaclip.captioner import (
     extract_caption_json,
     extract_evidence_json,
     generate_captions,
+    generate_evidence,
     make_resized_jpeg_bytes,
     maybe_verify_captions,
     normalize_captions,
@@ -25,10 +27,14 @@ from gemmaclip.gemma_client import (
     DEFAULT_GEMMA_TEXT_MODEL,
     DEFAULT_GEMMA_VISION_MODEL,
     DEFAULT_GEMMA_MAX_TOKENS,
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_PROVIDER_FIREWORKS,
+    DEFAULT_PROVIDER_GOOGLE,
     DEFAULT_TOP_K,
     GemmaClient,
     GemmaConfig,
     GemmaModelConfig,
+    GoogleGeminiClient,
     build_chat_completion_payload,
     extract_message_text,
     load_gemma_config,
@@ -175,6 +181,7 @@ def test_load_gemma_config_uses_fireworks_fallbacks():
     )
 
     assert config is not None
+    assert config.provider == DEFAULT_PROVIDER_FIREWORKS
     assert config.api_key == "fireworks-key"
     assert config.base_url == DEFAULT_FIREWORKS_BASE_URL
     assert config.vision_model == DEFAULT_GEMMA_VISION_MODEL
@@ -182,6 +189,19 @@ def test_load_gemma_config_uses_fireworks_fallbacks():
     assert config.fallback_models == DEFAULT_FALLBACK_MODELS
     assert config.max_tokens == DEFAULT_GEMMA_MAX_TOKENS
     assert config.use_response_format is False
+
+
+def test_load_gemma_config_prefers_google_provider_when_gemini_key_exists():
+    config = load_gemma_config(
+        {"GEMINI_API_KEY": "gemini-key"}
+    )
+
+    assert config is not None
+    assert config.provider == DEFAULT_PROVIDER_GOOGLE
+    assert config.api_key == "gemini-key"
+    assert config.base_url is None
+    assert config.vision_model == DEFAULT_GEMINI_MODEL
+    assert config.text_model == DEFAULT_GEMINI_MODEL
 
 
 def test_load_gemma_config_uses_gemma_model_override_for_both_roles():
@@ -222,6 +242,58 @@ def test_make_resized_jpeg_bytes_limits_max_side(tmp_path):
 
     with Image.open(BytesIO(resized_bytes)) as resized_image:
         assert max(resized_image.size) <= 768
+
+
+def test_google_gemini_client_raw_text_response_is_parsed_into_evidence(tmp_path):
+    class FakeGoogleResponse:
+        def __init__(self, text: str):
+            self.text = text
+
+    class FakeGoogleModels:
+        def __init__(self, text: str):
+            self.calls: list[dict[str, object]] = []
+            self._text = text
+
+        def generate_content(self, **kwargs):
+            self.calls.append(kwargs)
+            return FakeGoogleResponse(self._text)
+
+    class FakeGoogleSdkClient:
+        def __init__(self, text: str):
+            self.models = FakeGoogleModels(text)
+
+    frames = make_frames(tmp_path)
+    sdk_client = FakeGoogleSdkClient(
+        """{
+          "scene": "garden path",
+          "main_subjects": ["cat"],
+          "actions": ["walking"],
+          "setting": "garden",
+          "visible_objects": ["plants"],
+          "mood": "calm",
+          "camera_notes": "",
+          "uncertain_details": []
+        }"""
+    )
+    client = GoogleGeminiClient(
+        GemmaModelConfig(
+            api_key="gemini-key",
+            base_url=None,
+            model=DEFAULT_GEMINI_MODEL,
+            provider=DEFAULT_PROVIDER_GOOGLE,
+            fallback_models=(),
+        ),
+        client=sdk_client,
+    )
+
+    evidence = generate_evidence("clip-1", frames, client)
+    expected_message_count = len(build_evidence_messages("clip-1", frames)[1]["content"])
+
+    assert evidence["scene"] == "garden path"
+    assert evidence["main_subjects"] == ["cat"]
+    assert sdk_client.models.calls[0]["model"] == DEFAULT_GEMINI_MODEL
+    assert sdk_client.models.calls[0]["config"]["response_mime_type"] == "application/json"
+    assert len(sdk_client.models.calls[0]["contents"]) == expected_message_count
 
 
 def test_build_chat_completion_payload_matches_fireworks_defaults():
@@ -581,6 +653,22 @@ def test_extract_caption_json_ignores_evidence_json_when_style_keys_are_required
     assert "scene" not in payload
 
 
+def test_google_caption_response_with_fenced_json_parses_correctly():
+    text = """
+```json
+{
+  "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+  "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today."
+}
+```
+"""
+
+    payload = extract_caption_json(text, ("formal", "sarcastic"))
+
+    assert payload["formal"] == "A worker stands near a desk in a quiet office during a routine moment."
+    assert payload["sarcastic"] == "A worker performs thrilling office stillness at an admirably ordinary pace today."
+
+
 def test_extract_evidence_json_rejects_empty_object():
     try:
         extract_evidence_json("{}")
@@ -737,6 +825,21 @@ def test_generate_captions_force_fallback_skips_api_client_construction(tmp_path
     )
 
     assert captions == build_fallback_captions(("formal", "sarcastic"))
+
+
+def test_generate_captions_force_placeholder_skips_api_client_construction(tmp_path):
+    class FailingClient:
+        def __init__(self, _config):
+            raise AssertionError("API client should not be constructed during forced placeholder mode.")
+
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_FORCE_PLACEHOLDER": "true"},
+        client_factory=FailingClient,
+    )
+
+    assert captions == build_placeholder_captions(("formal", "sarcastic"))
 
 
 def test_generate_captions_falls_back_when_model_output_is_invalid(tmp_path):
