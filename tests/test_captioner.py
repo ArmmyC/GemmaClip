@@ -7,6 +7,7 @@ import httpx
 
 from gemmaclip.captioner import (
     build_evidence_messages,
+    build_google_evidence_messages,
     build_evidence_debug_payload,
     build_fallback_captions,
     build_placeholder_captions,
@@ -18,6 +19,7 @@ from gemmaclip.captioner import (
     make_resized_jpeg_bytes,
     maybe_verify_captions,
     normalize_captions,
+    select_google_evidence_frames,
     select_gemma_frames,
 )
 from gemmaclip.frames import ExtractedFrame
@@ -65,6 +67,21 @@ def make_frame_sequence(tmp_path, count: int) -> list[ExtractedFrame]:
     for index in range(count):
         frame_path = tmp_path / f"frame_{index + 1:03d}.jpg"
         frame_path.write_bytes(f"jpeg-{index}".encode("ascii"))
+        frames.append(ExtractedFrame(path=frame_path, timestamp_seconds=float(index)))
+    return frames
+
+
+def make_valid_frame_sequence(tmp_path, count: int) -> list[ExtractedFrame]:
+    from PIL import Image
+
+    frames: list[ExtractedFrame] = []
+    for index in range(count):
+        frame_path = tmp_path / f"frame_{index + 1:03d}.jpg"
+        Image.new("RGB", (320, 180), color=(index * 17 % 255, index * 29 % 255, index * 37 % 255)).save(
+            frame_path,
+            format="JPEG",
+            quality=90,
+        )
         frames.append(ExtractedFrame(path=frame_path, timestamp_seconds=float(index)))
     return frames
 
@@ -245,10 +262,38 @@ def test_make_resized_jpeg_bytes_limits_max_side(tmp_path):
         assert max(resized_image.size) <= 768
 
 
-def test_google_gemini_client_raw_text_response_is_parsed_into_evidence(tmp_path):
+def _config_to_mapping(config):
+    if isinstance(config, dict):
+        return config
+    if hasattr(config, "model_dump"):
+        return config.model_dump(exclude_none=True)
+    raise AssertionError(f"Unsupported config object in test: {type(config)}")
+
+
+def test_google_gemini_client_uploads_files_instead_of_inline_parts(tmp_path):
     class FakeGoogleResponse:
         def __init__(self, text: str):
             self.text = text
+
+    class FakeGoogleFile:
+        def __init__(self, name: str):
+            self.name = name
+            self.uri = f"gs://gemini/{name}"
+            self.mime_type = "image/jpeg"
+            self.marker = "uploaded-file"
+
+    class FakeGoogleFiles:
+        def __init__(self):
+            self.upload_calls: list[tuple[object, object]] = []
+            self.delete_calls: list[str] = []
+
+        def upload(self, *, file, config=None):
+            self.upload_calls.append((file, config))
+            return FakeGoogleFile(f"files/{len(self.upload_calls)}")
+
+        def delete(self, *, name, config=None):
+            self.delete_calls.append(name)
+            return {"deleted": name}
 
     class FakeGoogleModels:
         def __init__(self, text: str):
@@ -261,9 +306,10 @@ def test_google_gemini_client_raw_text_response_is_parsed_into_evidence(tmp_path
 
     class FakeGoogleSdkClient:
         def __init__(self, text: str):
+            self.files = FakeGoogleFiles()
             self.models = FakeGoogleModels(text)
 
-    frames = make_frames(tmp_path)
+    frames = make_valid_frame_sequence(tmp_path, 2)
     sdk_client = FakeGoogleSdkClient(
         """{
           "scene": "garden path",
@@ -288,13 +334,173 @@ def test_google_gemini_client_raw_text_response_is_parsed_into_evidence(tmp_path
     )
 
     evidence = generate_evidence("clip-1", frames, client)
-    expected_message_count = len(build_evidence_messages("clip-1", frames)[1]["content"])
+    contents = sdk_client.models.calls[0]["contents"]
 
     assert evidence["scene"] == "garden path"
     assert evidence["main_subjects"] == ["cat"]
     assert sdk_client.models.calls[0]["model"] == DEFAULT_GOOGLE_GEMMA_MODEL
-    assert sdk_client.models.calls[0]["config"]["response_mime_type"] == "application/json"
-    assert len(sdk_client.models.calls[0]["contents"]) == expected_message_count
+    assert len(sdk_client.files.upload_calls) == 2
+    assert all(getattr(item, "marker", "") == "uploaded-file" for item in contents if not isinstance(item, str))
+    assert sdk_client.files.delete_calls == ["files/1", "files/2"]
+
+
+def test_google_evidence_request_config_does_not_include_response_mime_type(tmp_path):
+    class FakeGoogleResponse:
+        def __init__(self, text: str):
+            self.text = text
+
+    class FakeGoogleFile:
+        def __init__(self, name: str):
+            self.name = name
+            self.uri = f"gs://gemini/{name}"
+            self.mime_type = "image/jpeg"
+
+    class FakeGoogleFiles:
+        def upload(self, *, file, config=None):
+            return FakeGoogleFile("files/1")
+
+        def delete(self, *, name, config=None):
+            return {"deleted": name}
+
+    class FakeGoogleModels:
+        def __init__(self):
+            self.calls: list[dict[str, object]] = []
+
+        def generate_content(self, **kwargs):
+            self.calls.append(kwargs)
+            return FakeGoogleResponse(
+                '{"scene":"garden","main_subjects":["cat"],"actions":["walking"],"setting":"garden","visible_objects":["plants"],"mood":"calm","camera_notes":"","uncertain_details":[]}'
+            )
+
+    class FakeGoogleSdkClient:
+        def __init__(self):
+            self.files = FakeGoogleFiles()
+            self.models = FakeGoogleModels()
+
+    sdk_client = FakeGoogleSdkClient()
+    client = GoogleGeminiClient(
+        GemmaModelConfig(
+            api_key="gemini-key",
+            base_url=None,
+            model=DEFAULT_GOOGLE_GEMMA_MODEL,
+            provider=DEFAULT_PROVIDER_GOOGLE,
+            fallback_models=(),
+        ),
+        client=sdk_client,
+    )
+
+    generate_evidence("clip-1", make_valid_frame_sequence(tmp_path, 2), client)
+    config_mapping = _config_to_mapping(sdk_client.models.calls[0]["config"])
+
+    assert "response_mime_type" not in config_mapping
+
+
+def test_google_request_config_includes_minimal_thinking_when_supported(tmp_path):
+    class FakeGoogleResponse:
+        def __init__(self, text: str):
+            self.text = text
+
+    class FakeGoogleFile:
+        def __init__(self, name: str):
+            self.name = name
+            self.uri = f"gs://gemini/{name}"
+            self.mime_type = "image/jpeg"
+
+    class FakeGoogleFiles:
+        def upload(self, *, file, config=None):
+            return FakeGoogleFile("files/1")
+
+        def delete(self, *, name, config=None):
+            return {"deleted": name}
+
+    class FakeGoogleModels:
+        def __init__(self):
+            self.calls: list[dict[str, object]] = []
+
+        def generate_content(self, **kwargs):
+            self.calls.append(kwargs)
+            return FakeGoogleResponse(
+                '{"scene":"garden","main_subjects":["cat"],"actions":["walking"],"setting":"garden","visible_objects":["plants"],"mood":"calm","camera_notes":"","uncertain_details":[]}'
+            )
+
+    class FakeGoogleSdkClient:
+        def __init__(self):
+            self.files = FakeGoogleFiles()
+            self.models = FakeGoogleModels()
+
+    sdk_client = FakeGoogleSdkClient()
+    client = GoogleGeminiClient(
+        GemmaModelConfig(
+            api_key="gemini-key",
+            base_url=None,
+            model=DEFAULT_GOOGLE_GEMMA_MODEL,
+            provider=DEFAULT_PROVIDER_GOOGLE,
+            fallback_models=(),
+        ),
+        client=sdk_client,
+    )
+
+    generate_evidence("clip-1", make_valid_frame_sequence(tmp_path, 1), client)
+    config_mapping = _config_to_mapping(sdk_client.models.calls[0]["config"])
+
+    assert str(config_mapping["thinking_config"]["thinking_level"]).lower().endswith("minimal")
+
+
+def test_google_provider_uses_four_frames(tmp_path):
+    class FakeClient:
+        construction_index = 0
+        evidence_image_counts: list[int] = []
+
+        def __init__(self, _config):
+            self._config = _config
+            self.kind = "vision" if FakeClient.construction_index == 0 else "text"
+            FakeClient.construction_index += 1
+
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            system_prompt = messages[0]["content"]
+            if "factual video analyst" in system_prompt:
+                FakeClient.evidence_image_counts.append(
+                    sum(1 for item in messages[1]["content"] if item.get("type") == "image_file")
+                )
+                return json.dumps(
+                    {
+                        "scene": "office",
+                        "main_subjects": ["worker"],
+                        "actions": ["standing"],
+                        "setting": "office",
+                        "visible_objects": ["desk"],
+                        "mood": "neutral",
+                        "camera_notes": "static shot",
+                        "uncertain_details": [],
+                    }
+                )
+            return json.dumps(
+                {
+                    "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+                    "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+                }
+            )
+
+    captions = generate_captions(
+        make_task(),
+        make_valid_frame_sequence(tmp_path, 12),
+        env={
+            "GEMINI_API_KEY": "gemini-key",
+            "GEMMACLIP_DISABLE_VERIFIER": "true",
+        },
+        client_factory=FakeClient,
+    )
+
+    assert captions["formal"]
+    assert FakeClient.evidence_image_counts == [4]
+
+
+def test_fireworks_provider_still_uses_twelve_frames_and_inline_data_urls(tmp_path):
+    messages = build_evidence_messages("clip-1", make_valid_frame_sequence(tmp_path, 12))
+    image_parts = [item for item in messages[1]["content"] if item.get("type") == "image_url"]
+
+    assert len(image_parts) == 12
+    assert all(item["image_url"]["url"].startswith("data:image/jpeg;base64,") for item in image_parts)
 
 
 def test_build_chat_completion_payload_matches_fireworks_defaults():
@@ -961,7 +1167,7 @@ def test_google_caption_calls_use_response_format_false(tmp_path):
         client_factory=FakeClient,
     )
 
-    assert FakeClient.evidence_flags == [True]
+    assert FakeClient.evidence_flags == [False]
     assert FakeClient.caption_flags == [False]
 
 

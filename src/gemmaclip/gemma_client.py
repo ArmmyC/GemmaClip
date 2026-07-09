@@ -4,9 +4,12 @@ import base64
 import json
 import logging
 import os
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -23,6 +26,8 @@ DEFAULT_GOOGLE_GEMMA_MODEL = "gemma-4-26b-a4b-it"
 DEFAULT_GEMMA_MAX_TOKENS = 2048
 DEFAULT_TOP_K = 40
 DEFAULT_GOOGLE_MAX_RETRIES = 4
+GOOGLE_IMAGE_MAX_SIDE = 512
+GOOGLE_IMAGE_QUALITY = 75
 LOGGER = logging.getLogger("gemmaclip.gemma_client")
 
 
@@ -259,7 +264,11 @@ class GoogleGeminiClient:
         use_response_format: bool | None = None,
     ) -> str:
         types = _load_google_types()
-        contents, system_instruction = _convert_messages_to_google_contents(messages, types)
+        contents, system_instruction, uploaded_file_names = _convert_messages_to_google_contents(
+            messages,
+            types,
+            self._client,
+        )
         request_config = _build_google_generation_config(
             system_instruction=system_instruction,
             temperature=temperature,
@@ -268,27 +277,30 @@ class GoogleGeminiClient:
         )
 
         last_error: Exception | None = None
-        for attempt in range(DEFAULT_GOOGLE_MAX_RETRIES):
-            try:
-                response = self._client.models.generate_content(
-                    model=self._config.model,
-                    contents=contents,
-                    config=request_config,
-                )
-                return _extract_google_response_text(response)
-            except Exception as exc:  # pragma: no cover - vendor exceptions vary by SDK version
-                last_error = exc
-                status_code = _extract_exception_status_code(exc)
-                if status_code is None or not _is_retryable_google_status(status_code) or attempt == DEFAULT_GOOGLE_MAX_RETRIES - 1:
-                    raise RuntimeError(f"Google Gemini request failed for model {self._config.model}: {exc}") from exc
-                delay_seconds = float(2 ** attempt)
-                LOGGER.warning(
-                    "Google Gemini request for model %s failed with status %s; retrying in %.1fs.",
-                    self._config.model,
-                    status_code,
-                    delay_seconds,
-                )
-                self._sleeper(delay_seconds)
+        try:
+            for attempt in range(DEFAULT_GOOGLE_MAX_RETRIES):
+                try:
+                    response = self._client.models.generate_content(
+                        model=self._config.model,
+                        contents=contents,
+                        config=request_config,
+                    )
+                    return _extract_google_response_text(response)
+                except Exception as exc:  # pragma: no cover - vendor exceptions vary by SDK version
+                    last_error = exc
+                    status_code = _extract_exception_status_code(exc)
+                    if status_code is None or not _is_retryable_google_status(status_code) or attempt == DEFAULT_GOOGLE_MAX_RETRIES - 1:
+                        raise RuntimeError(f"Google Gemini request failed for model {self._config.model}: {exc}") from exc
+                    delay_seconds = float(2 ** attempt)
+                    LOGGER.warning(
+                        "Google Gemini request for model %s failed with status %s; retrying in %.1fs.",
+                        self._config.model,
+                        status_code,
+                        delay_seconds,
+                    )
+                    self._sleeper(delay_seconds)
+        finally:
+            _delete_google_uploaded_files(self._client, uploaded_file_names)
 
         raise RuntimeError(f"Google Gemini request failed for model {self._config.model}: {last_error}")
 
@@ -483,9 +495,14 @@ def _load_google_types():
     return types
 
 
-def _convert_messages_to_google_contents(messages: Sequence[Mapping[str, Any]], types) -> tuple[list[Any], str | None]:
+def _convert_messages_to_google_contents(
+    messages: Sequence[Mapping[str, Any]],
+    types,
+    google_client: Any,
+) -> tuple[list[Any], str | None, list[str]]:
     system_fragments: list[str] = []
     contents: list[Any] = []
+    uploaded_file_names: list[str] = []
 
     for message in messages:
         role = str(message.get("role", "")).strip().lower()
@@ -496,13 +513,15 @@ def _convert_messages_to_google_contents(messages: Sequence[Mapping[str, Any]], 
                 system_fragments.append(system_text)
             continue
 
-        contents.extend(_convert_message_content_to_google_parts(content, types))
+        content_parts, new_uploaded_file_names = _convert_message_content_to_google_parts(content, types, google_client)
+        contents.extend(content_parts)
+        uploaded_file_names.extend(new_uploaded_file_names)
 
     if not contents:
         raise ValueError("Google Gemini request did not include any user content.")
 
     system_instruction = "\n\n".join(fragment for fragment in system_fragments if fragment).strip() or None
-    return contents, system_instruction
+    return contents, system_instruction, uploaded_file_names
 
 
 def _flatten_message_text(content: Any) -> str:
@@ -521,13 +540,18 @@ def _flatten_message_text(content: Any) -> str:
     return "\n".join(fragments).strip()
 
 
-def _convert_message_content_to_google_parts(content: Any, types) -> list[Any]:
+def _convert_message_content_to_google_parts(
+    content: Any,
+    types,
+    google_client: Any,
+) -> tuple[list[Any], list[str]]:
     if isinstance(content, str):
-        return [content.strip()] if content.strip() else []
+        return ([content.strip()] if content.strip() else []), []
     if not isinstance(content, list):
-        return []
+        return [], []
 
     parts: list[Any] = []
+    uploaded_file_names: list[str] = []
     for item in content:
         if not isinstance(item, Mapping):
             continue
@@ -537,6 +561,16 @@ def _convert_message_content_to_google_parts(content: Any, types) -> list[Any]:
             if isinstance(text, str) and text.strip():
                 parts.append(text.strip())
             continue
+        if item_type == "image_file":
+            path = item.get("path")
+            if not isinstance(path, str) or not path.strip():
+                continue
+            uploaded_file = _upload_google_image_path(google_client, Path(path.strip()))
+            parts.append(uploaded_file)
+            uploaded_file_name = getattr(uploaded_file, "name", None)
+            if isinstance(uploaded_file_name, str) and uploaded_file_name.strip():
+                uploaded_file_names.append(uploaded_file_name.strip())
+            continue
         if item_type == "image_url":
             image_url = item.get("image_url")
             if not isinstance(image_url, Mapping):
@@ -545,16 +579,28 @@ def _convert_message_content_to_google_parts(content: Any, types) -> list[Any]:
             if not isinstance(url, str) or not url.strip():
                 continue
             mime_type, data = _decode_image_payload(url.strip())
-            parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
+            uploaded_file = _upload_google_image_bytes(google_client, data=data, mime_type=mime_type)
+            parts.append(uploaded_file)
+            uploaded_file_name = getattr(uploaded_file, "name", None)
+            if isinstance(uploaded_file_name, str) and uploaded_file_name.strip():
+                uploaded_file_names.append(uploaded_file_name.strip())
             continue
         mime_type = item.get("mime_type")
         data = item.get("data")
         if isinstance(mime_type, str) and isinstance(data, bytes):
-            parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
+            uploaded_file = _upload_google_image_bytes(google_client, data=data, mime_type=mime_type)
+            parts.append(uploaded_file)
+            uploaded_file_name = getattr(uploaded_file, "name", None)
+            if isinstance(uploaded_file_name, str) and uploaded_file_name.strip():
+                uploaded_file_names.append(uploaded_file_name.strip())
             continue
         if isinstance(mime_type, str) and isinstance(data, str):
-            parts.append(types.Part.from_bytes(data=base64.b64decode(data), mime_type=mime_type))
-    return parts
+            uploaded_file = _upload_google_image_bytes(google_client, data=base64.b64decode(data), mime_type=mime_type)
+            parts.append(uploaded_file)
+            uploaded_file_name = getattr(uploaded_file, "name", None)
+            if isinstance(uploaded_file_name, str) and uploaded_file_name.strip():
+                uploaded_file_names.append(uploaded_file_name.strip())
+    return parts, uploaded_file_names
 
 
 def _decode_image_payload(value: str) -> tuple[str, bytes]:
@@ -573,7 +619,7 @@ def _build_google_generation_config(
     temperature: float,
     max_tokens: int,
     use_json: bool,
-) -> dict[str, Any]:
+) -> Any:
     config: dict[str, Any] = {
         "temperature": temperature,
         "max_output_tokens": max_tokens,
@@ -585,11 +631,22 @@ def _build_google_generation_config(
         config["system_instruction"] = system_instruction
     if use_json:
         config["response_mime_type"] = "application/json"
-    return config
+    return _with_google_thinking_config(config)
 
 
 def _google_use_json_response(use_response_format: bool | None) -> bool:
     return use_response_format is True
+
+
+def _with_google_thinking_config(config: dict[str, Any]) -> Any:
+    try:
+        types = _load_google_types()
+        generate_config_type = getattr(types, "GenerateContentConfig")
+        thinking_config_type = getattr(types, "ThinkingConfig")
+        thinking_config = thinking_config_type(thinking_level="minimal")
+        return generate_config_type(**config, thinking_config=thinking_config)
+    except Exception:  # pragma: no cover - depends on SDK surface/version
+        return config
 
 
 def _extract_google_response_text(response: Any) -> str:
@@ -631,6 +688,53 @@ def _extract_exception_status_code(exc: Exception) -> int | None:
 
 def _is_retryable_google_status(status_code: int) -> bool:
     return status_code == 429 or 500 <= status_code < 600
+
+
+def _upload_google_image_path(google_client: Any, image_path: Path) -> Any:
+    resized_bytes = _make_google_resized_jpeg_bytes(image_path)
+    return _upload_google_image_bytes(google_client, data=resized_bytes, mime_type="image/jpeg")
+
+
+def _upload_google_image_bytes(
+    google_client: Any,
+    *,
+    data: bytes,
+    mime_type: str,
+) -> Any:
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as handle:
+            handle.write(data)
+            temp_path = handle.name
+        return google_client.files.upload(file=temp_path, config={"mime_type": mime_type})
+    finally:
+        if temp_path is not None:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _make_google_resized_jpeg_bytes(image_path: Path) -> bytes:
+    try:
+        from PIL import Image
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on install state
+        raise RuntimeError("Pillow is required for Google Gemini image uploads.") from exc
+
+    output = BytesIO()
+    with Image.open(image_path) as image:
+        converted = image.convert("RGB")
+        converted.thumbnail((GOOGLE_IMAGE_MAX_SIDE, GOOGLE_IMAGE_MAX_SIDE))
+        converted.save(output, format="JPEG", quality=GOOGLE_IMAGE_QUALITY, optimize=True)
+    return output.getvalue()
+
+
+def _delete_google_uploaded_files(google_client: Any, uploaded_file_names: Sequence[str]) -> None:
+    for file_name in uploaded_file_names:
+        try:
+            google_client.files.delete(name=file_name)
+        except Exception:  # pragma: no cover - cleanup should not affect captioning
+            LOGGER.debug("Failed to delete uploaded Google Gemini file %s.", file_name)
 
 
 def _parse_max_tokens(value: str | None) -> int:

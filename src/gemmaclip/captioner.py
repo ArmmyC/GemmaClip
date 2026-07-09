@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from gemmaclip.frames import ExtractedFrame
-from gemmaclip.gemma_client import create_model_client, extract_json_objects, load_gemma_config
+from gemmaclip.gemma_client import DEFAULT_PROVIDER_GOOGLE, create_model_client, extract_json_objects, load_gemma_config
 from gemmaclip.io import Task, safe_task_id
 from gemmaclip.prompts import (
     EVIDENCE_SCHEMA,
@@ -26,6 +26,7 @@ from gemmaclip.prompts import (
 
 LOGGER = logging.getLogger("gemmaclip.captioner")
 MAX_GEMMA_FRAMES = 12
+MAX_GOOGLE_EVIDENCE_FRAMES = 4
 MAX_CAPTION_WORDS = 25
 MAX_CAPTION_ATTEMPTS = 3
 BANNED_SPECULATION_PHRASES = (
@@ -125,11 +126,16 @@ def generate_captions(
 
     try:
         selected_frames = select_gemma_frames(frames, max_frames=MAX_GEMMA_FRAMES)
+        evidence_frames = (
+            select_google_evidence_frames(selected_frames)
+            if config.provider == DEFAULT_PROVIDER_GOOGLE
+            else list(selected_frames)
+        )
         vision_client = client_factory(config.vision_model_config())
         text_client = client_factory(config.text_model_config())
-        evidence = generate_evidence(task.task_id, selected_frames, vision_client)
+        evidence = generate_evidence(task.task_id, evidence_frames, vision_client)
         if debug_dir is not None:
-            write_evidence_debug_file(task.task_id, selected_frames, evidence, debug_dir)
+            write_evidence_debug_file(task.task_id, evidence_frames, evidence, debug_dir)
     except Exception as exc:
         active_logger.warning("Task %s failed during evidence generation, using fallback captions: %s", task.task_id, exc)
         return build_fallback_captions(task.styles)
@@ -316,6 +322,29 @@ def build_evidence_messages(task_id: str, frames: Sequence[ExtractedFrame]) -> l
     ]
 
 
+def build_google_evidence_messages(task_id: str, frames: Sequence[ExtractedFrame]) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = [{"type": "text", "text": build_evidence_user_prompt(task_id, frames)}]
+    for frame in frames:
+        content.append(
+            {
+                "type": "text",
+                "text": f"Frame {frame.path.name} at timestamp_seconds={frame.timestamp_seconds:.3f}",
+            }
+        )
+        content.append(
+            {
+                "type": "image_file",
+                "path": str(frame.path),
+                "mime_type": "image/jpeg",
+            }
+        )
+
+    return [
+        {"role": "system", "content": build_evidence_system_prompt()},
+        {"role": "user", "content": content},
+    ]
+
+
 def build_caption_messages(
     task_id: str,
     styles: Sequence[str],
@@ -382,7 +411,11 @@ def generate_evidence(
     frames: Sequence[ExtractedFrame],
     client: Any,
 ) -> dict[str, Any]:
-    evidence_messages = build_evidence_messages(task_id, frames)
+    evidence_messages = (
+        build_google_evidence_messages(task_id, frames)
+        if _model_provider(client) == DEFAULT_PROVIDER_GOOGLE
+        else build_evidence_messages(task_id, frames)
+    )
     last_text = ""
     last_error: Exception | None = None
 
@@ -391,7 +424,7 @@ def generate_evidence(
             client,
             evidence_messages,
             temperature=0.1,
-            use_response_format=_should_use_google_json_mode(client),
+            use_response_format=False,
         )
         try:
             return extract_evidence_json(last_text)
@@ -753,13 +786,34 @@ def _list_phrase(value: Any, *, fallback: str) -> str:
     return cleaned_value or fallback
 
 
+def select_google_evidence_frames(
+    frames: Sequence[ExtractedFrame],
+    max_frames: int = MAX_GOOGLE_EVIDENCE_FRAMES,
+) -> list[ExtractedFrame]:
+    ordered_frames = list(frames)
+    if len(ordered_frames) <= max_frames:
+        return ordered_frames
+
+    last_index = len(ordered_frames) - 1
+    selected_indices = sorted(
+        {
+            0,
+            round(last_index / 3),
+            round((2 * last_index) / 3),
+            last_index,
+        }
+    )
+    return [ordered_frames[index] for index in selected_indices]
+
+
 def _verifier_disabled(env: Mapping[str, str]) -> bool:
     return env.get("GEMMACLIP_DISABLE_VERIFIER", "").strip().lower() == "true"
 
 
-def _should_use_google_json_mode(client: Any) -> bool:
+def _model_provider(client: Any) -> str:
     config = getattr(client, "_config", None)
-    return getattr(config, "provider", "") == "google"
+    provider = getattr(config, "provider", "")
+    return provider if isinstance(provider, str) else ""
 
 
 def _force_placeholder(env: Mapping[str, str]) -> bool:
