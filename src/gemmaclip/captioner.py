@@ -32,6 +32,12 @@ BANNED_SPECULATION_PHRASES = (
     "maybe",
     "appears to be",
     "seems to be",
+    "seem",
+    "seems",
+    "seeming",
+    "seemingly",
+    "as if",
+    "hoping",
 )
 TECH_CLAIM_PATTERNS = (
     re.compile(r"\bscript\b"),
@@ -71,9 +77,15 @@ SOFT_TECH_REPLACEMENTS = (
 SOFT_SPECULATION_REPLACEMENTS = (
     (re.compile(r"\bappears to be\b", re.IGNORECASE), "is"),
     (re.compile(r"\bseems to be\b", re.IGNORECASE), "is"),
+    (re.compile(r"\bseemingly\b", re.IGNORECASE), ""),
+    (re.compile(r"\bseeming\b", re.IGNORECASE), "looking"),
+    (re.compile(r"\bseems\b", re.IGNORECASE), "looks"),
+    (re.compile(r"\bseem\b", re.IGNORECASE), "look"),
     (re.compile(r"\blikely\b", re.IGNORECASE), ""),
     (re.compile(r"\bprobably\b", re.IGNORECASE), ""),
     (re.compile(r"\bmaybe\b", re.IGNORECASE), ""),
+    (re.compile(r"\bas if\b", re.IGNORECASE), "while"),
+    (re.compile(r"\bhoping\b", re.IGNORECASE), "waiting"),
 )
 
 
@@ -530,6 +542,7 @@ def _soften_unsupported_tech_claims(caption: str) -> str:
 
 def _normalize_spacing(caption: str) -> str:
     normalized = re.sub(r"\s+([,.;:!?])", r"\1", caption)
+    normalized = re.sub(r"([,.;:!?])\s*([,.;:!?])+", r"\1", normalized)
     normalized = re.sub(r"\(\s+", "(", normalized)
     normalized = re.sub(r"\s+\)", ")", normalized)
     normalized = re.sub(r"\s{2,}", " ", normalized)

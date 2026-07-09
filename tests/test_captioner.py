@@ -397,6 +397,20 @@ def test_normalize_captions_rejects_banned_speculation_phrase():
     assert captions["sarcastic"] == "A worker is standing by while traffic does the usual thing."
 
 
+def test_normalize_captions_softens_expanded_banned_phrases():
+    captions = normalize_captions(
+        {
+            "formal": "A person seems calm beside traffic, as if hoping for a quiet crossing today.",
+            "sarcastic": "A worker seemingly waits by the desk while the room does its usual dramatic office impression.",
+        },
+        ("formal", "sarcastic"),
+        make_evidence(),
+    )
+
+    assert captions["formal"] == "A person looks calm beside traffic, while waiting for a quiet crossing today."
+    assert captions["sarcastic"] == "A worker waits by the desk while the room does its usual dramatic office impression."
+
+
 def test_normalize_captions_rejects_overlong_caption():
     overlong = "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentytfour twentytfive twentysix"
 
@@ -658,6 +672,46 @@ def test_generate_captions_writes_debug_caption_files(tmp_path):
     assert captions["formal"]
     assert (debug_dir / "clip-1_captions_raw.json").exists()
     assert (debug_dir / "clip-1_captions_verified.json").exists()
+
+
+def test_generate_captions_does_not_fallback_for_soft_caption_issues(tmp_path):
+    class FakeClient:
+        def __init__(self, _config):
+            pass
+
+        def chat_completion_json(self, messages, temperature):
+            system_prompt = messages[0]["content"]
+            if "factual video analyst" in system_prompt:
+                return {
+                    "scene": "office",
+                    "main_subjects": ["worker"],
+                    "actions": ["standing"],
+                    "setting": "office",
+                    "visible_objects": ["desk"],
+                    "mood": "neutral",
+                    "camera_notes": "static shot",
+                    "uncertain_details": [],
+                }
+            return {
+                "formal": "A worker probably stands near a desk in a quiet office during a routine moment.",
+                "sarcastic": "A worker seems calm by the desk, as if hoping the office will become less thrilling today.",
+            }
+
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={
+            "GEMMA_API_KEY": "key",
+            "GEMMA_BASE_URL": "https://example.com/v1",
+            "GEMMA_MODEL": "gemma-test",
+            "GEMMACLIP_DISABLE_VERIFIER": "true",
+        },
+        client_factory=FakeClient,
+    )
+
+    assert captions != build_fallback_captions(("formal", "sarcastic"))
+    assert captions["formal"] == "A worker stands near a desk in a quiet office during a routine moment."
+    assert captions["sarcastic"] == "A worker looks calm by the desk, while waiting the office will become less thrilling today."
 
 
 def test_generate_captions_uses_placeholder_when_config_missing(tmp_path):
