@@ -11,7 +11,7 @@ from typing import Any
 from gemmaclip.captioner import build_fallback_captions, generate_captions
 from gemmaclip.download import download_video
 from gemmaclip.frames import DEFAULT_FRAME_STRATEGY, VALID_FRAME_STRATEGIES, export_debug_artifacts, extract_frames
-from gemmaclip.gemma_client import DEFAULT_PROVIDER_GOOGLE, load_gemma_config
+from gemmaclip.gemma_client import DEFAULT_PROVIDER_GOOGLE, DEFAULT_PROVIDER_OPENROUTER, load_gemma_config
 from gemmaclip.io import Task, make_frame_manifest_entry, read_tasks, write_frame_manifest, write_results
 from gemmaclip.validate import validate_results
 from gemmaclip.video import probe_video
@@ -97,7 +97,9 @@ def process_task(
     try:
         values = env if env is not None else os.environ
         config = None if dry_run else load_gemma_config(values)
-        use_google_fast_frames = bool(config is not None and config.provider == DEFAULT_PROVIDER_GOOGLE)
+        use_google_fast_frames = bool(
+            config is not None and config.provider in {DEFAULT_PROVIDER_GOOGLE, DEFAULT_PROVIDER_OPENROUTER}
+        )
 
         video_path = download_video(task)
         metadata = probe_video(video_path)

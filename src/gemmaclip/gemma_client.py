@@ -16,8 +16,10 @@ import httpx
 
 DEFAULT_PROVIDER_FIREWORKS = "fireworks"
 DEFAULT_PROVIDER_GOOGLE = "google"
-VALID_PROVIDERS = {DEFAULT_PROVIDER_FIREWORKS, DEFAULT_PROVIDER_GOOGLE}
+DEFAULT_PROVIDER_OPENROUTER = "openrouter"
+VALID_PROVIDERS = {DEFAULT_PROVIDER_FIREWORKS, DEFAULT_PROVIDER_GOOGLE, DEFAULT_PROVIDER_OPENROUTER}
 DEFAULT_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
+DEFAULT_OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_GEMMA_MODEL = "accounts/fireworks/models/gemma-4-31b-it"
 DEFAULT_GEMMA_VISION_MODEL = "accounts/fireworks/models/qwen3p7-plus"
 DEFAULT_GEMMA_TEXT_MODEL = "accounts/fireworks/models/deepseek-v4-pro"
@@ -27,6 +29,8 @@ DEFAULT_GEMMA_MAX_TOKENS = 2048
 DEFAULT_TOP_K = 40
 DEFAULT_GOOGLE_MAX_RETRIES = 2
 DEFAULT_GOOGLE_RETRY_BACKOFF_SECONDS = (0.5, 1.0)
+DEFAULT_OPENROUTER_MAX_RETRIES = 2
+DEFAULT_OPENROUTER_RETRY_BACKOFF_SECONDS = (0.5, 1.0)
 GOOGLE_IMAGE_MAX_SIDE = 512
 GOOGLE_IMAGE_QUALITY = 75
 LOGGER = logging.getLogger("gemmaclip.gemma_client")
@@ -100,20 +104,10 @@ def load_gemma_config(env: Mapping[str, str] | None = None) -> GemmaConfig | Non
     provider = _resolve_provider(values)
 
     if provider == DEFAULT_PROVIDER_GOOGLE:
-        api_key = values.get("GEMINI_API_KEY", "").strip() or values.get("GOOGLE_API_KEY", "").strip()
-        model = values.get("GEMINI_MODEL", "").strip() or DEFAULT_GOOGLE_GEMMA_MODEL
-        if not api_key:
-            return None
-        return GemmaConfig(
-            api_key=api_key,
-            base_url=None,
-            vision_model=model,
-            text_model=model,
-            fallback_models=(),
-            max_tokens=_parse_max_tokens(values.get("GEMMA_MAX_TOKENS")),
-            use_response_format=False,
-            provider=provider,
-        )
+        return load_google_provider_config(values)
+
+    if provider == DEFAULT_PROVIDER_OPENROUTER:
+        return load_openrouter_provider_config(values)
 
     api_key = values.get("GEMMA_API_KEY", "").strip() or values.get("FIREWORKS_API_KEY", "").strip()
     base_url = values.get("GEMMA_BASE_URL", "").strip() or DEFAULT_FIREWORKS_BASE_URL
@@ -137,9 +131,47 @@ def load_gemma_config(env: Mapping[str, str] | None = None) -> GemmaConfig | Non
     )
 
 
-def create_model_client(config: GemmaModelConfig) -> GemmaClient | GoogleGeminiClient:
+def load_google_provider_config(env: Mapping[str, str] | None = None) -> GemmaConfig | None:
+    values = env if env is not None else os.environ
+    api_key = values.get("GEMINI_API_KEY", "").strip() or values.get("GOOGLE_API_KEY", "").strip()
+    model = values.get("GEMINI_MODEL", "").strip() or DEFAULT_GOOGLE_GEMMA_MODEL
+    if not api_key:
+        return None
+    return GemmaConfig(
+        api_key=api_key,
+        base_url=None,
+        vision_model=model,
+        text_model=model,
+        fallback_models=(),
+        max_tokens=_parse_max_tokens(values.get("GEMMA_MAX_TOKENS")),
+        use_response_format=False,
+        provider=DEFAULT_PROVIDER_GOOGLE,
+    )
+
+
+def load_openrouter_provider_config(env: Mapping[str, str] | None = None) -> GemmaConfig | None:
+    values = env if env is not None else os.environ
+    api_key = values.get("OPENROUTER_API_KEY", "").strip()
+    model = values.get("OPENROUTER_MODEL", "").strip()
+    if not api_key or not model:
+        return None
+    return GemmaConfig(
+        api_key=api_key,
+        base_url=DEFAULT_OPENROUTER_CHAT_COMPLETIONS_URL,
+        vision_model=model,
+        text_model=model,
+        fallback_models=(),
+        max_tokens=_parse_max_tokens(values.get("GEMMA_MAX_TOKENS")),
+        use_response_format=False,
+        provider=DEFAULT_PROVIDER_OPENROUTER,
+    )
+
+
+def create_model_client(config: GemmaModelConfig) -> GemmaClient | GoogleGeminiClient | OpenRouterClient:
     if config.provider == DEFAULT_PROVIDER_GOOGLE:
         return GoogleGeminiClient(config)
+    if config.provider == DEFAULT_PROVIDER_OPENROUTER:
+        return OpenRouterClient(config)
     return GemmaClient(config)
 
 
@@ -323,6 +355,106 @@ class GoogleGeminiClient:
         return parse_json_object(text)
 
 
+class OpenRouterClient:
+    def __init__(
+        self,
+        config: GemmaModelConfig,
+        client: httpx.Client | None = None,
+        *,
+        sleeper: Any = time.sleep,
+    ) -> None:
+        self._config = config
+        self._client = client or httpx.Client(timeout=config.timeout_seconds)
+        self._sleeper = sleeper
+
+    def chat_completion_text(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        temperature: float,
+        *,
+        use_response_format: bool | None = None,
+    ) -> str:
+        if not self._config.base_url:
+            raise RuntimeError("OpenRouter client requires a base URL.")
+
+        request_payload = build_openrouter_chat_completion_payload(
+            self._config,
+            messages=_convert_messages_to_openrouter_messages(messages),
+            temperature=temperature,
+            use_response_format=use_response_format,
+        )
+        max_attempts = DEFAULT_OPENROUTER_MAX_RETRIES + 1
+        last_error: Exception | None = None
+
+        for attempt in range(max_attempts):
+            try:
+                response = self._client.post(
+                    self._config.base_url,
+                    headers={
+                        "Authorization": f"Bearer {self._config.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=request_payload,
+                )
+                LOGGER.info(
+                    "OpenRouter request provider=%s model=%s status_code=%s",
+                    self._config.provider,
+                    self._config.model,
+                    response.status_code,
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                status_code = exc.response.status_code
+                LOGGER.warning(
+                    "OpenRouter request provider=%s model=%s status_code=%s",
+                    self._config.provider,
+                    self._config.model,
+                    status_code,
+                )
+                if not _is_retryable_openrouter_status(status_code) or attempt == max_attempts - 1:
+                    raise RuntimeError(f"OpenRouter request failed for model {self._config.model}: {exc}") from exc
+                self._sleeper(
+                    DEFAULT_OPENROUTER_RETRY_BACKOFF_SECONDS[
+                        min(attempt, len(DEFAULT_OPENROUTER_RETRY_BACKOFF_SECONDS) - 1)
+                    ]
+                )
+                continue
+            except httpx.HTTPError as exc:
+                LOGGER.warning(
+                    "OpenRouter request provider=%s model=%s transport_error=%s",
+                    self._config.provider,
+                    self._config.model,
+                    exc.__class__.__name__,
+                )
+                raise RuntimeError(f"OpenRouter request failed for model {self._config.model}: {exc}") from exc
+
+            try:
+                payload = response.json()
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("OpenRouter returned invalid JSON.") from exc
+
+            if not isinstance(payload, dict):
+                raise RuntimeError("OpenRouter returned an unexpected response shape.")
+            return extract_message_text(payload)
+
+        raise RuntimeError(f"OpenRouter request failed for model {self._config.model}: {last_error}")
+
+    def chat_completion_json(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        temperature: float,
+        *,
+        use_response_format: bool | None = None,
+    ) -> dict[str, Any]:
+        text = self.chat_completion_text(
+            messages,
+            temperature,
+            use_response_format=use_response_format,
+        )
+        return parse_json_object(text)
+
+
 def build_chat_completion_payload(
     config: GemmaModelConfig,
     *,
@@ -339,6 +471,24 @@ def build_chat_completion_payload(
         "top_k": DEFAULT_TOP_K,
         "presence_penalty": 0,
         "frequency_penalty": 0,
+    }
+    if use_response_format if use_response_format is not None else config.use_response_format:
+        payload["response_format"] = {"type": "json_object"}
+    return payload
+
+
+def build_openrouter_chat_completion_payload(
+    config: GemmaModelConfig,
+    *,
+    messages: Sequence[Mapping[str, Any]],
+    temperature: float,
+    use_response_format: bool | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": config.model,
+        "messages": list(messages),
+        "temperature": temperature,
+        "max_tokens": config.max_tokens,
     }
     if use_response_format if use_response_format is not None else config.use_response_format:
         payload["response_format"] = {"type": "json_object"}
@@ -544,6 +694,63 @@ def _flatten_message_text(content: Any) -> str:
     return "\n".join(fragments).strip()
 
 
+def _convert_messages_to_openrouter_messages(
+    messages: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for message in messages:
+        role = str(message.get("role", "")).strip().lower() or "user"
+        content = message.get("content")
+        if isinstance(content, str):
+            converted.append({"role": role, "content": content})
+            continue
+        if not isinstance(content, list):
+            converted.append({"role": role, "content": ""})
+            continue
+
+        content_parts: list[dict[str, Any]] = []
+        for item in content:
+            if not isinstance(item, Mapping):
+                continue
+            item_type = item.get("type")
+            if item_type == "text":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    content_parts.append({"type": "text", "text": text.strip()})
+                continue
+            if item_type == "image_file":
+                path = item.get("path")
+                if isinstance(path, str) and path.strip():
+                    content_parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": _make_image_file_data_url(Path(path.strip()))},
+                        }
+                    )
+                continue
+            if item_type == "image_url":
+                image_url = item.get("image_url")
+                if isinstance(image_url, Mapping):
+                    url = image_url.get("url")
+                    if isinstance(url, str) and url.strip():
+                        content_parts.append({"type": "image_url", "image_url": {"url": url.strip()}})
+                continue
+            mime_type = item.get("mime_type")
+            data = item.get("data")
+            if isinstance(mime_type, str) and isinstance(data, bytes):
+                content_parts.append({"type": "image_url", "image_url": {"url": _encode_data_url(mime_type, data)}})
+                continue
+            if isinstance(mime_type, str) and isinstance(data, str):
+                content_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _encode_data_url(mime_type, base64.b64decode(data))},
+                    }
+                )
+        converted.append({"role": role, "content": content_parts})
+    return converted
+
+
 def _convert_message_content_to_google_parts(
     content: Any,
     types,
@@ -615,6 +822,16 @@ def _decode_image_payload(value: str) -> tuple[str, bytes]:
         raise ValueError("Google Gemini image data URL must be base64 encoded.")
     mime_type = header[5:].split(";", 1)[0].strip() or "image/jpeg"
     return mime_type, base64.b64decode(encoded)
+
+
+def _make_image_file_data_url(image_path: Path) -> str:
+    mime_type = "image/jpeg"
+    return _encode_data_url(mime_type, image_path.read_bytes())
+
+
+def _encode_data_url(mime_type: str, data: bytes) -> str:
+    encoded = base64.b64encode(data).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
 
 
 def _build_google_generation_config(
@@ -692,6 +909,10 @@ def _extract_exception_status_code(exc: Exception) -> int | None:
 
 def _is_retryable_google_status(status_code: int) -> bool:
     return status_code == 429 or 500 <= status_code < 600
+
+
+def _is_retryable_openrouter_status(status_code: int) -> bool:
+    return status_code in {429, 500, 502, 503, 504}
 
 
 def _upload_google_image_path(google_client: Any, image_path: Path) -> Any:

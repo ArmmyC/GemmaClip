@@ -224,3 +224,42 @@ def test_process_task_fireworks_path_uses_standard_frame_extraction(tmp_path, mo
 
     assert result["captions"]["formal"] == "clip-1 formal caption."
     assert extraction_modes == [False]
+
+
+def test_process_task_openrouter_path_uses_fast_frame_extraction(tmp_path, monkeypatch):
+    task = make_tasks()[0]
+    extraction_modes: list[bool] = []
+    frame_path = tmp_path / "frame_001.jpg"
+    frame_path.write_bytes(b"jpeg")
+
+    monkeypatch.setattr("gemmaclip.main.download_video", lambda task: tmp_path / "video.mp4")
+    monkeypatch.setattr(
+        "gemmaclip.main.probe_video",
+        lambda video_path: VideoMetadata(duration_seconds=100.0, fps=24.0, width=1920, height=1080, frame_count=2400),
+    )
+
+    def fake_extract_frames(task_id, video_path, metadata, **kwargs):
+        extraction_modes.append(kwargs["google_fast"])
+        return [ExtractedFrame(path=frame_path, timestamp_seconds=5.0)]
+
+    monkeypatch.setattr("gemmaclip.main.extract_frames", fake_extract_frames)
+    monkeypatch.setattr(
+        "gemmaclip.main.generate_captions",
+        lambda task, frames, **kwargs: {
+            "formal": "clip-1 formal caption.",
+            "sarcastic": "clip-1 sarcastic caption.",
+        },
+    )
+
+    result, _ = process_task(
+        task,
+        workdir=tmp_path,
+        env={
+            "GEMMACLIP_PROVIDER": "openrouter",
+            "OPENROUTER_API_KEY": "openrouter-key",
+            "OPENROUTER_MODEL": "openrouter/model",
+        },
+    )
+
+    assert result["captions"]["formal"] == "clip-1 formal caption."
+    assert extraction_modes == [True]

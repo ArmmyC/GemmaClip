@@ -33,12 +33,15 @@ from gemmaclip.gemma_client import (
     DEFAULT_GOOGLE_GEMMA_MODEL,
     DEFAULT_PROVIDER_FIREWORKS,
     DEFAULT_PROVIDER_GOOGLE,
+    DEFAULT_PROVIDER_OPENROUTER,
     DEFAULT_TOP_K,
     GemmaClient,
     GemmaConfig,
     GemmaModelConfig,
     GoogleGeminiClient,
+    OpenRouterClient,
     build_chat_completion_payload,
+    build_openrouter_chat_completion_payload,
     extract_message_text,
     load_gemma_config,
     parse_json_object,
@@ -221,6 +224,22 @@ def test_load_gemma_config_prefers_google_provider_when_gemini_key_exists():
     assert config.base_url is None
     assert config.vision_model == DEFAULT_GOOGLE_GEMMA_MODEL
     assert config.text_model == DEFAULT_GOOGLE_GEMMA_MODEL
+
+
+def test_load_gemma_config_uses_openrouter_when_requested():
+    config = load_gemma_config(
+        {
+            "GEMMACLIP_PROVIDER": "openrouter",
+            "OPENROUTER_API_KEY": "openrouter-key",
+            "OPENROUTER_MODEL": "openrouter/model",
+        }
+    )
+
+    assert config is not None
+    assert config.provider == DEFAULT_PROVIDER_OPENROUTER
+    assert config.api_key == "openrouter-key"
+    assert config.vision_model == "openrouter/model"
+    assert config.text_model == "openrouter/model"
 
 
 def test_load_gemma_config_uses_gemma_model_override_for_both_roles():
@@ -445,6 +464,155 @@ def test_google_request_config_includes_minimal_thinking_when_supported(tmp_path
     config_mapping = _config_to_mapping(sdk_client.models.calls[0]["config"])
 
     assert str(config_mapping["thinking_config"]["thinking_level"]).lower().endswith("minimal")
+
+
+def test_openrouter_image_file_is_converted_to_base64_image_url(tmp_path):
+    from PIL import Image
+
+    image_path = tmp_path / "frame.jpg"
+    Image.new("RGB", (32, 32), color="blue").save(image_path, format="JPEG", quality=85)
+
+    class RecordingHttpClient:
+        def __init__(self):
+            self.payloads: list[dict[str, object]] = []
+
+        def post(self, url, headers, json):
+            self.payloads.append(json)
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            return httpx.Response(
+                200,
+                request=request,
+                json={"choices": [{"message": {"content": "ok"}}]},
+            )
+
+    http_client = RecordingHttpClient()
+    client = OpenRouterClient(
+        GemmaModelConfig(
+            api_key="openrouter-key",
+            base_url="https://openrouter.ai/api/v1/chat/completions",
+            model="openrouter/model",
+            provider=DEFAULT_PROVIDER_OPENROUTER,
+            fallback_models=(),
+        ),
+        client=http_client,
+    )
+
+    response_text = client.chat_completion_text(
+        [
+            {"role": "system", "content": "system prompt"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe this"},
+                    {"type": "image_file", "path": str(image_path), "mime_type": "image/jpeg"},
+                ],
+            },
+        ],
+        0.1,
+    )
+
+    content = http_client.payloads[0]["messages"][1]["content"]
+    assert response_text == "ok"
+    assert content[0] == {"type": "text", "text": "describe this"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_openrouter_text_only_caption_call_works():
+    class RecordingHttpClient:
+        def post(self, url, headers, json):
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            return httpx.Response(
+                200,
+                request=request,
+                json={"choices": [{"message": {"content": '{"formal":"caption"}'}}]},
+            )
+
+    client = OpenRouterClient(
+        GemmaModelConfig(
+            api_key="openrouter-key",
+            base_url="https://openrouter.ai/api/v1/chat/completions",
+            model="openrouter/model",
+            provider=DEFAULT_PROVIDER_OPENROUTER,
+            fallback_models=(),
+        ),
+        client=RecordingHttpClient(),
+    )
+
+    text = client.chat_completion_text(
+        [{"role": "user", "content": "caption from evidence"}],
+        0.7,
+    )
+
+    assert text == '{"formal":"caption"}'
+
+
+def test_openrouter_retries_on_429_and_5xx():
+    class RetryingHttpClient:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, headers, json):
+            self.calls += 1
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            if self.calls == 1:
+                return httpx.Response(429, request=request, json={"error": "retry"})
+            if self.calls == 2:
+                return httpx.Response(503, request=request, json={"error": "retry"})
+            return httpx.Response(
+                200,
+                request=request,
+                json={"choices": [{"message": {"content": "final"}}]},
+            )
+
+    delays: list[float] = []
+    client = OpenRouterClient(
+        GemmaModelConfig(
+            api_key="openrouter-key",
+            base_url="https://openrouter.ai/api/v1/chat/completions",
+            model="openrouter/model",
+            provider=DEFAULT_PROVIDER_OPENROUTER,
+            fallback_models=(),
+        ),
+        client=RetryingHttpClient(),
+        sleeper=delays.append,
+    )
+
+    text = client.chat_completion_text([{"role": "user", "content": "hello"}], 0.2)
+
+    assert text == "final"
+    assert delays == [0.5, 1.0]
+
+
+def test_openrouter_does_not_log_secrets(caplog):
+    class RecordingHttpClient:
+        def post(self, url, headers, json):
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            return httpx.Response(
+                200,
+                request=request,
+                json={"choices": [{"message": {"content": "safe"}}]},
+            )
+
+    caplog.set_level("INFO")
+    secret = "super-secret-key"
+    client = OpenRouterClient(
+        GemmaModelConfig(
+            api_key=secret,
+            base_url="https://openrouter.ai/api/v1/chat/completions",
+            model="openrouter/model",
+            provider=DEFAULT_PROVIDER_OPENROUTER,
+            fallback_models=(),
+        ),
+        client=RecordingHttpClient(),
+    )
+
+    client.chat_completion_text([{"role": "user", "content": "hello"}], 0.2)
+
+    assert "provider=openrouter" in caplog.text
+    assert "model=openrouter/model" in caplog.text
+    assert "status_code=200" in caplog.text
+    assert secret not in caplog.text
 
 
 def test_google_v7_provider_uses_six_frames(tmp_path):
@@ -758,6 +926,71 @@ def test_google_v7_low_remaining_time_uses_v6_direct_mode(tmp_path):
     assert captions["formal"]
     assert len(sdk_client.files.upload_calls) == 1
     assert len(sdk_client.models.calls) == 1
+
+
+def test_openrouter_evidence_failure_falls_back_to_google_v7(tmp_path):
+    class OpenRouterFailingClient:
+        def __init__(self, config):
+            self._config = config
+
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            return "{}"
+
+    class GoogleFallbackClient:
+        call_count = 0
+
+        def __init__(self, config):
+            self._config = config
+
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            GoogleFallbackClient.call_count += 1
+            if isinstance(messages[1]["content"], list):
+                return json.dumps(
+                    {
+                        "scene": "office scene",
+                        "main_subjects": ["worker"],
+                        "actions": ["standing"],
+                        "setting": "office",
+                        "visible_objects": ["desk"],
+                        "mood": "neutral",
+                        "camera_notes": "static shot",
+                        "temporal_progression": "The worker stays near the desk across the clip.",
+                        "caption_focus": "worker standing near a desk",
+                    }
+                )
+            return json.dumps(
+                {
+                    "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+                    "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+                }
+            )
+
+    created_providers: list[str] = []
+
+    def client_factory(config):
+        created_providers.append(config.provider)
+        if config.provider == DEFAULT_PROVIDER_OPENROUTER:
+            return OpenRouterFailingClient(config)
+        if config.provider == DEFAULT_PROVIDER_GOOGLE:
+            return GoogleFallbackClient(config)
+        raise AssertionError(f"Unexpected provider: {config.provider}")
+
+    captions = generate_captions(
+        make_task(),
+        make_valid_frame_sequence(tmp_path, 12),
+        env={
+            "GEMMACLIP_PROVIDER": "openrouter",
+            "OPENROUTER_API_KEY": "openrouter-key",
+            "OPENROUTER_MODEL": "openrouter/model",
+            "GEMINI_API_KEY": "gemini-key",
+            "GEMMACLIP_DISABLE_VERIFIER": "true",
+        },
+        client_factory=client_factory,
+    )
+
+    assert captions["formal"]
+    assert created_providers == [DEFAULT_PROVIDER_OPENROUTER, DEFAULT_PROVIDER_GOOGLE]
+    assert GoogleFallbackClient.call_count == 2
 
 
 def test_fireworks_provider_still_uses_old_evidence_caption_behavior(tmp_path):

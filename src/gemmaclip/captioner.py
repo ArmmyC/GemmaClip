@@ -17,9 +17,11 @@ from gemmaclip.frames import ExtractedFrame
 from gemmaclip.gemma_client import (
     DEFAULT_PROVIDER_FIREWORKS,
     DEFAULT_PROVIDER_GOOGLE,
+    DEFAULT_PROVIDER_OPENROUTER,
     create_model_client,
     extract_json_objects,
     load_gemma_config,
+    load_google_provider_config,
 )
 from gemmaclip.io import Task, safe_task_id
 from gemmaclip.prompts import (
@@ -149,6 +151,18 @@ def generate_captions(
             logger=active_logger,
             client_factory=client_factory,
             model_config=config.text_model_config(),
+            remaining_seconds=remaining_seconds,
+        )
+    if config.provider == DEFAULT_PROVIDER_OPENROUTER:
+        return _generate_openrouter_experiment_captions(
+            task,
+            frames,
+            debug_dir=debug_dir,
+            env=values,
+            logger=active_logger,
+            client_factory=client_factory,
+            model_config=config.text_model_config(),
+            google_fallback_config=load_google_provider_config(values),
             remaining_seconds=remaining_seconds,
         )
 
@@ -1109,6 +1123,110 @@ def _generate_google_direct_mode_captions(
             task,
             captions,
             {},
+            client,
+            env,
+            debug_dir=debug_dir,
+        )
+
+    if debug_dir is not None:
+        write_captions_debug_file(task.task_id, final_captions, debug_dir, suffix="verified")
+    return final_captions
+
+
+def _generate_openrouter_experiment_captions(
+    task: Task,
+    frames: Sequence[ExtractedFrame],
+    *,
+    debug_dir: str | Path | None,
+    env: Mapping[str, str],
+    logger: logging.Logger,
+    client_factory: Callable[[Any], Any],
+    model_config: Any,
+    google_fallback_config: Any,
+    remaining_seconds: float | None,
+) -> dict[str, str]:
+    selected_frames = select_google_evidence_frames(frames)
+    client = client_factory(model_config)
+
+    if remaining_seconds is not None and remaining_seconds < GOOGLE_DESCRIPTION_FIRST_MIN_REMAINING_SECONDS:
+        logger.info(
+            "Task %s using OpenRouter direct mode because remaining time is %.1fs.",
+            task.task_id,
+            remaining_seconds,
+        )
+        return _generate_google_direct_mode_captions(
+            task,
+            selected_frames,
+            client,
+            env,
+            debug_dir=debug_dir,
+            logger=logger,
+        )
+
+    try:
+        evidence = generate_google_visual_evidence(task.task_id, selected_frames, client)
+        if debug_dir is not None:
+            write_evidence_debug_file(task.task_id, selected_frames, evidence, debug_dir)
+    except Exception as exc:
+        if google_fallback_config is not None:
+            logger.warning(
+                "Task %s failed during OpenRouter evidence generation, falling back to Google v7: %s",
+                task.task_id,
+                exc,
+            )
+            return _generate_google_fast_captions(
+                task,
+                frames,
+                debug_dir=debug_dir,
+                env=env,
+                logger=logger,
+                client_factory=client_factory,
+                model_config=google_fallback_config.text_model_config(),
+                remaining_seconds=remaining_seconds,
+            )
+
+        logger.warning(
+            "Task %s failed during OpenRouter evidence generation, falling back to direct mode: %s",
+            task.task_id,
+            exc,
+        )
+        return _generate_google_direct_mode_captions(
+            task,
+            selected_frames,
+            client,
+            env,
+            debug_dir=debug_dir,
+            logger=logger,
+        )
+
+    used_evidence_fallback = False
+    try:
+        captions = generate_style_captions(
+            task.task_id,
+            task.styles,
+            evidence,
+            client,
+            debug_dir=debug_dir,
+            max_attempts=2,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Task %s failed during OpenRouter caption generation after evidence extraction, using evidence-based fallback captions: %s",
+            task.task_id,
+            exc,
+        )
+        captions = build_evidence_based_captions(task.styles, evidence)
+        used_evidence_fallback = True
+
+    if debug_dir is not None:
+        write_captions_debug_file(task.task_id, captions, debug_dir, suffix="raw")
+
+    final_captions = captions
+    if not used_evidence_fallback and not _verifier_disabled(env):
+        final_captions = maybe_verify_captions(
+            task,
+            captions,
+            evidence,
             client,
             env,
             debug_dir=debug_dir,
