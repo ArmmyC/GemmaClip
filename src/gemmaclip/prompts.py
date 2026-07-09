@@ -83,6 +83,25 @@ def build_caption_user_prompt(
     )
 
 
+def build_caption_repair_user_prompt(
+    task_id: str,
+    styles: Sequence[str],
+    evidence: dict[str, Any],
+    previous_response: str,
+) -> str:
+    return (
+        f"Task ID: {task_id}\n"
+        f"Requested styles: {', '.join(styles)}\n"
+        "The previous response was invalid. Return only a JSON object with exactly these style keys. "
+        "No markdown. No explanation. Each value must be a complete caption, not punctuation.\n"
+        "Evidence JSON:\n"
+        f"{json.dumps(evidence, indent=2)}\n"
+        "Previous raw model response:\n"
+        f"{previous_response}\n"
+        "Return only the corrected JSON object."
+    )
+
+
 def build_verifier_system_prompt() -> str:
     return (
         "You are GemmaClip's caption verifier and minimal refiner. Use only the provided evidence JSON. "

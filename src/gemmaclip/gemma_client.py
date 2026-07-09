@@ -22,7 +22,7 @@ DEFAULT_FALLBACK_MODELS = ("accounts/fireworks/models/kimi-k2p6",)
 DEFAULT_GOOGLE_GEMMA_MODEL = "gemma-4-26b-a4b-it"
 DEFAULT_GEMMA_MAX_TOKENS = 2048
 DEFAULT_TOP_K = 40
-DEFAULT_GOOGLE_MAX_RETRIES = 3
+DEFAULT_GOOGLE_MAX_RETRIES = 4
 LOGGER = logging.getLogger("gemmaclip.gemma_client")
 
 
@@ -589,7 +589,7 @@ def _build_google_generation_config(
 
 
 def _google_use_json_response(use_response_format: bool | None) -> bool:
-    return True
+    return use_response_format is True
 
 
 def _extract_google_response_text(response: Any) -> str:

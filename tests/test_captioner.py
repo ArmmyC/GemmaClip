@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 
 import httpx
@@ -542,6 +543,19 @@ def test_normalize_captions_empty_caption_still_raises():
         raise AssertionError("Expected normalize_captions to raise for an empty caption.")
 
 
+def test_normalize_captions_rejects_useless_period_caption():
+    try:
+        normalize_captions(
+            {"formal": ".", "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today."},
+            ("formal", "sarcastic"),
+            make_evidence(),
+        )
+    except ValueError as exc:
+        assert "style formal" in str(exc)
+    else:
+        raise AssertionError("Expected normalize_captions to reject a punctuation-only caption.")
+
+
 def test_verifier_is_skipped_when_disabled(tmp_path):
     class FailingClient:
         def chat_completion_json(self, messages, temperature):
@@ -802,6 +816,155 @@ def test_generate_captions_does_not_fallback_for_soft_caption_issues(tmp_path):
     assert captions["sarcastic"] == "A worker looks calm by the desk, while waiting the office will become less thrilling today."
 
 
+def test_generate_captions_non_json_response_triggers_repair_retry(tmp_path):
+    class FakeClient:
+        construction_index = 0
+        caption_user_prompts: list[str] = []
+        caption_attempts = 0
+
+        def __init__(self, _config):
+            self._config = _config
+            self.kind = "vision" if FakeClient.construction_index == 0 else "text"
+            FakeClient.construction_index += 1
+
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            system_prompt = messages[0]["content"]
+            if "factual video analyst" in system_prompt:
+                return json.dumps(
+                    {
+                        "scene": "office",
+                        "main_subjects": ["worker"],
+                        "actions": ["standing"],
+                        "setting": "office",
+                        "visible_objects": ["desk"],
+                        "mood": "neutral",
+                        "camera_notes": "static shot",
+                        "uncertain_details": [],
+                    }
+                )
+
+            FakeClient.caption_attempts += 1
+            FakeClient.caption_user_prompts.append(messages[1]["content"])
+            if FakeClient.caption_attempts == 1:
+                return "not valid json at all"
+            return json.dumps(
+                {
+                    "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+                    "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+                }
+            )
+
+    debug_dir = tmp_path / "debug"
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={
+            "GEMINI_API_KEY": "gemini-key",
+            "GEMMACLIP_DISABLE_VERIFIER": "true",
+        },
+        debug_dir=debug_dir,
+        client_factory=FakeClient,
+    )
+
+    assert FakeClient.caption_attempts == 2
+    assert "Previous raw model response" in FakeClient.caption_user_prompts[1]
+    assert captions["formal"] == "A worker stands near a desk in a quiet office during a routine moment."
+    assert (debug_dir / "clip-1_caption_attempt_1.txt").exists()
+    assert (debug_dir / "clip-1_caption_attempt_2.txt").exists()
+
+
+def test_generate_captions_uses_evidence_based_fallback_after_repeated_caption_failure(tmp_path):
+    class FakeClient:
+        construction_index = 0
+
+        def __init__(self, _config):
+            self._config = _config
+            self.kind = "vision" if FakeClient.construction_index == 0 else "text"
+            FakeClient.construction_index += 1
+
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            system_prompt = messages[0]["content"]
+            if "factual video analyst" in system_prompt:
+                return json.dumps(
+                    {
+                        "scene": "office",
+                        "main_subjects": ["worker"],
+                        "actions": ["standing"],
+                        "setting": "office",
+                        "visible_objects": ["desk"],
+                        "mood": "neutral",
+                        "camera_notes": "static shot",
+                        "uncertain_details": [],
+                    }
+                )
+            return "."
+
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={
+            "GEMINI_API_KEY": "gemini-key",
+            "GEMMACLIP_DISABLE_VERIFIER": "true",
+        },
+        client_factory=FakeClient,
+    )
+
+    assert captions != build_fallback_captions(("formal", "sarcastic"))
+    assert "worker" in captions["formal"]
+    assert "standing" in captions["formal"]
+    assert "fully processed" not in captions["formal"]
+
+
+def test_google_caption_calls_use_response_format_false(tmp_path):
+    class FakeClient:
+        construction_index = 0
+        evidence_flags: list[bool | None] = []
+        caption_flags: list[bool | None] = []
+
+        def __init__(self, _config):
+            self._config = _config
+            self.kind = "vision" if FakeClient.construction_index == 0 else "text"
+            FakeClient.construction_index += 1
+
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            system_prompt = messages[0]["content"]
+            if "factual video analyst" in system_prompt:
+                FakeClient.evidence_flags.append(use_response_format)
+                return json.dumps(
+                    {
+                        "scene": "office",
+                        "main_subjects": ["worker"],
+                        "actions": ["standing"],
+                        "setting": "office",
+                        "visible_objects": ["desk"],
+                        "mood": "neutral",
+                        "camera_notes": "static shot",
+                        "uncertain_details": [],
+                    }
+                )
+
+            FakeClient.caption_flags.append(use_response_format)
+            return json.dumps(
+                {
+                    "formal": "A worker stands near a desk in a quiet office during a routine moment.",
+                    "sarcastic": "A worker performs thrilling office stillness at an admirably ordinary pace today.",
+                }
+            )
+
+    generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={
+            "GEMINI_API_KEY": "gemini-key",
+            "GEMMACLIP_DISABLE_VERIFIER": "true",
+        },
+        client_factory=FakeClient,
+    )
+
+    assert FakeClient.evidence_flags == [True]
+    assert FakeClient.caption_flags == [False]
+
+
 def test_generate_captions_uses_placeholder_when_config_missing(tmp_path):
     captions = generate_captions(
         make_task(),
@@ -842,6 +1005,24 @@ def test_generate_captions_force_placeholder_skips_api_client_construction(tmp_p
     assert captions == build_placeholder_captions(("formal", "sarcastic"))
 
 
+def test_generate_captions_uses_generic_fallback_when_evidence_generation_fails(tmp_path):
+    class FakeClient:
+        def __init__(self, _config):
+            self._config = _config
+
+        def chat_completion_text(self, messages, temperature, use_response_format=None):
+            return "{}"
+
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={"GEMINI_API_KEY": "gemini-key"},
+        client_factory=FakeClient,
+    )
+
+    assert captions == build_fallback_captions(("formal", "sarcastic"))
+
+
 def test_generate_captions_falls_back_when_model_output_is_invalid(tmp_path):
     class FakeClient:
         def __init__(self, _config):
@@ -861,7 +1042,7 @@ def test_generate_captions_falls_back_when_model_output_is_invalid(tmp_path):
                     "uncertain_details": [],
                 }
             return {
-                "formal": "A worker uses a desktop computer in a modern office setting while focusing on routine tasks."
+                "formal": "."
             }
 
     captions = generate_captions(
@@ -871,11 +1052,13 @@ def test_generate_captions_falls_back_when_model_output_is_invalid(tmp_path):
             "GEMMA_API_KEY": "key",
             "GEMMA_BASE_URL": "https://example.com/v1",
             "GEMMA_MODEL": "gemma-test",
+            "GEMMACLIP_DISABLE_VERIFIER": "true",
         },
         client_factory=FakeClient,
     )
 
-    assert captions == build_fallback_captions(("formal", "sarcastic"))
+    assert captions != build_fallback_captions(("formal", "sarcastic"))
+    assert "worker" in captions["formal"]
 
 
 def test_generate_captions_dry_run_skips_api_calls(tmp_path):

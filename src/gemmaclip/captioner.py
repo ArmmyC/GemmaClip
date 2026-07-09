@@ -15,6 +15,7 @@ from gemmaclip.gemma_client import create_model_client, extract_json_objects, lo
 from gemmaclip.io import Task, safe_task_id
 from gemmaclip.prompts import (
     EVIDENCE_SCHEMA,
+    build_caption_repair_user_prompt,
     build_caption_system_prompt,
     build_caption_user_prompt,
     build_evidence_system_prompt,
@@ -26,6 +27,7 @@ from gemmaclip.prompts import (
 LOGGER = logging.getLogger("gemmaclip.captioner")
 MAX_GEMMA_FRAMES = 12
 MAX_CAPTION_WORDS = 25
+MAX_CAPTION_ATTEMPTS = 3
 BANNED_SPECULATION_PHRASES = (
     "likely",
     "probably",
@@ -128,15 +130,33 @@ def generate_captions(
         evidence = generate_evidence(task.task_id, selected_frames, vision_client)
         if debug_dir is not None:
             write_evidence_debug_file(task.task_id, selected_frames, evidence, debug_dir)
-        caption_messages = build_caption_messages(task.task_id, task.styles, evidence)
-        caption_text = request_model_text(text_client, caption_messages, temperature=0.7)
-        captions = normalize_captions(
-            extract_caption_json(caption_text, task.styles),
+    except Exception as exc:
+        active_logger.warning("Task %s failed during evidence generation, using fallback captions: %s", task.task_id, exc)
+        return build_fallback_captions(task.styles)
+
+    used_evidence_fallback = False
+    try:
+        captions = generate_style_captions(
+            task.task_id,
             task.styles,
             evidence,
+            text_client,
+            debug_dir=debug_dir,
         )
-        if debug_dir is not None:
-            write_captions_debug_file(task.task_id, captions, debug_dir, suffix="raw")
+    except Exception as exc:
+        active_logger.warning(
+            "Task %s failed during caption generation after evidence extraction, using evidence-based fallback captions: %s",
+            task.task_id,
+            exc,
+        )
+        captions = build_evidence_based_captions(task.styles, evidence)
+        used_evidence_fallback = True
+
+    if debug_dir is not None:
+        write_captions_debug_file(task.task_id, captions, debug_dir, suffix="raw")
+
+    final_captions = captions
+    if not used_evidence_fallback:
         final_captions = maybe_verify_captions(
             task,
             captions,
@@ -145,12 +165,10 @@ def generate_captions(
             values,
             debug_dir=debug_dir,
         )
-        if debug_dir is not None:
-            write_captions_debug_file(task.task_id, final_captions, debug_dir, suffix="verified")
-        return final_captions
-    except Exception as exc:
-        active_logger.warning("Task %s failed during model captioning, using fallback captions: %s", task.task_id, exc)
-        return build_fallback_captions(task.styles)
+
+    if debug_dir is not None:
+        write_captions_debug_file(task.task_id, final_captions, debug_dir, suffix="verified")
+    return final_captions
 
 
 def build_placeholder_captions(styles: Sequence[str]) -> dict[str, str]:
@@ -245,6 +263,19 @@ def write_captions_debug_file(
     return output_path
 
 
+def write_caption_attempt_debug_file(
+    task_id: str,
+    response_text: str,
+    debug_dir: str | Path,
+    *,
+    attempt_number: int,
+) -> Path:
+    output_path = Path(debug_dir) / f"{safe_task_id(task_id)}_caption_attempt_{attempt_number}.txt"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(response_text, encoding="utf-8")
+    return output_path
+
+
 def select_gemma_frames(
     frames: Sequence[ExtractedFrame],
     max_frames: int = MAX_GEMMA_FRAMES,
@@ -293,6 +324,21 @@ def build_caption_messages(
     return [
         {"role": "system", "content": build_caption_system_prompt()},
         {"role": "user", "content": build_caption_user_prompt(task_id, styles, evidence)},
+    ]
+
+
+def build_caption_repair_messages(
+    task_id: str,
+    styles: Sequence[str],
+    evidence: dict[str, Any],
+    previous_response: str,
+) -> list[dict[str, Any]]:
+    return [
+        {"role": "system", "content": build_caption_system_prompt()},
+        {
+            "role": "user",
+            "content": build_caption_repair_user_prompt(task_id, styles, evidence, previous_response),
+        },
     ]
 
 
@@ -345,7 +391,7 @@ def generate_evidence(
             client,
             evidence_messages,
             temperature=0.1,
-            use_response_format=False,
+            use_response_format=_should_use_google_json_mode(client),
         )
         try:
             return extract_evidence_json(last_text)
@@ -390,6 +436,51 @@ def request_model_text(
         return json.dumps(payload)
 
     raise TypeError("Client does not support text or JSON chat completion methods.")
+
+
+def generate_style_captions(
+    task_id: str,
+    styles: Sequence[str],
+    evidence: dict[str, Any],
+    client: Any,
+    *,
+    debug_dir: str | Path | None = None,
+) -> dict[str, str]:
+    last_response = ""
+    last_error: Exception | None = None
+
+    for attempt in range(1, MAX_CAPTION_ATTEMPTS + 1):
+        messages = (
+            build_caption_messages(task_id, styles, evidence)
+            if attempt == 1
+            else build_caption_repair_messages(task_id, styles, evidence, last_response)
+        )
+        caption_text = request_model_text(
+            client,
+            messages,
+            temperature=0.7 if attempt == 1 else 0.2,
+            use_response_format=False,
+        )
+        last_response = caption_text
+        if debug_dir is not None:
+            write_caption_attempt_debug_file(
+                task_id,
+                caption_text,
+                debug_dir,
+                attempt_number=attempt,
+            )
+        try:
+            return normalize_captions(
+                extract_caption_json(caption_text, styles),
+                styles,
+                evidence,
+            )
+        except ValueError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError("Caption generation failed without a usable model response.")
 
 
 def normalize_evidence(payload: dict[str, Any]) -> dict[str, Any]:
@@ -463,7 +554,12 @@ def maybe_verify_captions(
 
     try:
         verifier_messages = build_verifier_messages(task.task_id, task.styles, evidence, captions)
-        verifier_text = request_model_text(client, verifier_messages, temperature=0.2)
+        verifier_text = request_model_text(
+            client,
+            verifier_messages,
+            temperature=0.2,
+            use_response_format=False,
+        )
         verified_payload = extract_caption_json(verifier_text, task.styles)
         verified_captions = normalize_captions(verified_payload, task.styles, evidence)
     except Exception:
@@ -482,10 +578,36 @@ def validate_caption_structure(
         if not isinstance(value, str):
             raise ValueError(f"Model response did not include a valid caption for style {style}.")
         caption = value.strip()
-        if not caption:
+        if not caption or _is_invalid_caption_text(caption):
             raise ValueError(f"Model response did not include a valid caption for style {style}.")
         captions[style] = caption
     return captions
+
+
+def build_evidence_based_captions(
+    styles: Sequence[str],
+    evidence: Mapping[str, Any],
+) -> dict[str, str]:
+    subject_text = _evidence_subject_phrase(evidence)
+    action_text = _evidence_action_phrase(evidence)
+    setting_text = _evidence_setting_phrase(evidence)
+    object_text = _evidence_object_phrase(evidence)
+
+    templates = {
+        "formal": (
+            f"The scene shows {subject_text} {action_text} in {setting_text}, with {object_text} visible nearby."
+        ),
+        "sarcastic": (
+            f"The scene shows {subject_text} {action_text} in {setting_text}, because apparently even ordinary moments deserve polite fanfare."
+        ),
+        "humorous_tech": (
+            f"The scene shows {subject_text} {action_text} in {setting_text}, like a calm CPU handling one more background task."
+        ),
+        "humorous_non_tech": (
+            f"The scene shows {subject_text} {action_text} in {setting_text}, like the day quietly rehearsed one small joke."
+        ),
+    }
+    return {style: templates[style] for style in styles}
 
 
 def cleanup_caption(caption: str, style: str, evidence: dict[str, Any]) -> str:
@@ -584,8 +706,60 @@ def _load_pillow_image():
     return Image
 
 
+def _is_invalid_caption_text(caption: str) -> bool:
+    normalized = caption.strip().lower()
+    condensed = re.sub(r"[\s_]+", "", normalized)
+    if condensed in {"", ".", "-", "--", "...", "n/a", "na", "caption"}:
+        return True
+    if re.fullmatch(r"[\W_]+", caption):
+        return True
+    return sum(1 for char in caption if char.isalpha()) < 5
+
+
+def _evidence_subject_phrase(evidence: Mapping[str, Any]) -> str:
+    subjects = evidence.get("main_subjects")
+    return _list_phrase(subjects, fallback="the main subject")
+
+
+def _evidence_action_phrase(evidence: Mapping[str, Any]) -> str:
+    actions = evidence.get("actions")
+    return _list_phrase(actions, fallback="moving through the scene")
+
+
+def _evidence_setting_phrase(evidence: Mapping[str, Any]) -> str:
+    setting = str(evidence.get("setting", "")).strip()
+    if setting:
+        return setting
+    scene = str(evidence.get("scene", "")).strip()
+    return scene or "the visible scene"
+
+
+def _evidence_object_phrase(evidence: Mapping[str, Any]) -> str:
+    objects = evidence.get("visible_objects")
+    return _list_phrase(objects, fallback="other scene details")
+
+
+def _list_phrase(value: Any, *, fallback: str) -> str:
+    if isinstance(value, list):
+        cleaned = [str(item).strip() for item in value if str(item).strip()]
+        if not cleaned:
+            return fallback
+        if len(cleaned) == 1:
+            return cleaned[0]
+        if len(cleaned) == 2:
+            return f"{cleaned[0]} and {cleaned[1]}"
+        return f"{', '.join(cleaned[:-1])}, and {cleaned[-1]}"
+    cleaned_value = str(value).strip()
+    return cleaned_value or fallback
+
+
 def _verifier_disabled(env: Mapping[str, str]) -> bool:
     return env.get("GEMMACLIP_DISABLE_VERIFIER", "").strip().lower() == "true"
+
+
+def _should_use_google_json_mode(client: Any) -> bool:
+    config = getattr(client, "_config", None)
+    return getattr(config, "provider", "") == "google"
 
 
 def _force_placeholder(env: Mapping[str, str]) -> bool:
