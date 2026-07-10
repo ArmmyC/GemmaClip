@@ -58,6 +58,12 @@ FIREWORKS_JUDGE_FINAL_OUTPUT_BUFFER_SECONDS = 20.0
 FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS = (
     FIREWORKS_JUDGE_REQUEST_BUDGET_SECONDS + FIREWORKS_JUDGE_FINAL_OUTPUT_BUFFER_SECONDS
 )
+_STYLE_KEY_ALIASES = {
+    "formal": "formal",
+    "sarcastic": "sarcastic",
+    "humoroustech": "humorous_tech",
+    "humorousnontech": "humorous_non_tech",
+}
 BANNED_SPECULATION_PHRASES = (
     "likely",
     "probably",
@@ -1127,6 +1133,8 @@ def _generate_fireworks_judge_captions(
             selected_frames,
             client,
             remaining_time_fn=remaining_time_fn,
+            debug_dir=debug_dir,
+            api_key=str(getattr(model_config, "api_key", "")),
         )
     except Exception as exc:
         logger.warning("Task %s Fireworks judge generation failed; using fallback captions: %s", task.task_id, exc)
@@ -1151,6 +1159,8 @@ def _generate_fireworks_judge_captions(
             captions,
             client,
             remaining_time_fn=remaining_time_fn,
+            debug_dir=debug_dir,
+            api_key=str(getattr(model_config, "api_key", "")),
         )
     except Exception as exc:
         logger.warning("Task %s Fireworks judge review failed; preserving first captions: %s", task.task_id, exc)
@@ -1167,6 +1177,8 @@ def generate_fireworks_judge_direct_captions(
     client: Any,
     *,
     remaining_time_fn: Callable[[], float],
+    debug_dir: str | Path | None,
+    api_key: str,
 ) -> dict[str, str]:
     messages = build_fireworks_judge_generation_messages(task.task_id, task.styles, frames)
     return client.complete_json(
@@ -1175,6 +1187,13 @@ def generate_fireworks_judge_direct_captions(
         validator=lambda payload: _normalize_exact_caption_keys(payload, task.styles),
         remaining_time_fn=remaining_time_fn,
         minimum_remaining_seconds=FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS,
+        operation="generation",
+        validation_failure_handler=_fireworks_validation_debug_writer(
+            task.task_id,
+            "generation",
+            debug_dir,
+            api_key,
+        ),
     )
 
 
@@ -1185,6 +1204,8 @@ def generate_fireworks_judge_review_captions(
     client: Any,
     *,
     remaining_time_fn: Callable[[], float],
+    debug_dir: str | Path | None,
+    api_key: str,
 ) -> dict[str, str]:
     messages = build_fireworks_judge_review_messages(task.task_id, task.styles, frames, captions)
     return client.complete_json(
@@ -1193,33 +1214,113 @@ def generate_fireworks_judge_review_captions(
         validator=lambda payload: _validate_fireworks_judge_review(payload, task.styles),
         remaining_time_fn=remaining_time_fn,
         minimum_remaining_seconds=FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS,
+        operation="review",
+        validation_failure_handler=_fireworks_validation_debug_writer(
+            task.task_id,
+            "review",
+            debug_dir,
+            api_key,
+        ),
     )
 
 
 def _normalize_exact_caption_keys(payload: Mapping[str, Any], styles: Sequence[str]) -> dict[str, str]:
-    if set(payload) != set(styles):
-        raise ValueError("Fireworks judge response must include exactly the requested style keys.")
-    return normalize_captions(dict(payload), styles, {})
+    return _extract_requested_fireworks_captions(payload, styles)
 
 
 def _validate_fireworks_judge_review(payload: Mapping[str, Any], styles: Sequence[str]) -> dict[str, str]:
-    if set(payload) != {"scores", "captions"}:
-        raise ValueError("Fireworks judge review response must contain only scores and captions.")
     scores = payload.get("scores")
     captions = payload.get("captions")
-    if not isinstance(scores, Mapping) or set(scores) != set(styles):
-        raise ValueError("Fireworks judge review scores must match requested styles.")
+    if not isinstance(captions, Mapping):
+        raise ValueError(f"invalid review caption: {styles[0]}")
+    normalized_captions = _extract_requested_fireworks_captions(captions, styles, review=True)
+
+    if not isinstance(scores, Mapping) or not _has_usable_requested_review_scores(scores, styles):
+        LOGGER.warning("Fireworks judge review scores unavailable.")
+    return normalized_captions
+
+
+def _extract_requested_fireworks_captions(
+    payload: Mapping[str, Any],
+    styles: Sequence[str],
+    *,
+    review: bool = False,
+) -> dict[str, str]:
+    source = payload.get("captions")
+    caption_payload = source if isinstance(source, Mapping) else payload
+    found: dict[str, Any] = {}
+    for raw_key, value in caption_payload.items():
+        if not isinstance(raw_key, str):
+            continue
+        style = _normalize_fireworks_style_key(raw_key)
+        if style in styles and style not in found:
+            found[style] = value
+
+    captions: dict[str, str] = {}
+    for style in styles:
+        if style not in found:
+            if review:
+                raise ValueError(f"invalid review caption: {style}")
+            raise ValueError(f"missing requested style: {style}")
+        value = found[style]
+        if not isinstance(value, str):
+            if review:
+                raise ValueError(f"invalid review caption: {style}")
+            raise ValueError(f"requested style is not a string: {style}")
+        if not value.strip() or _is_invalid_caption_text(value):
+            if review:
+                raise ValueError(f"invalid review caption: {style}")
+            raise ValueError(f"invalid requested style: {style}")
+        captions[style] = value
+    return normalize_captions(captions, styles, {})
+
+
+def _normalize_fireworks_style_key(value: str) -> str | None:
+    compact = re.sub(r"[\s_-]+", "", value.strip().casefold())
+    return _STYLE_KEY_ALIASES.get(compact)
+
+
+def _has_usable_requested_review_scores(scores: Mapping[str, Any], styles: Sequence[str]) -> bool:
     for style in styles:
         score = scores.get(style)
         if not isinstance(score, Mapping):
-            raise ValueError(f"Fireworks judge review score is invalid for {style}.")
+            return False
         for score_name in ("accuracy", "style_match"):
             value = score.get(score_name)
             if not isinstance(value, (int, float)) or not 0.0 <= float(value) <= 1.0:
-                raise ValueError(f"Fireworks judge review {score_name} is invalid for {style}.")
-    if not isinstance(captions, Mapping):
-        raise ValueError("Fireworks judge review captions must be an object.")
-    return _normalize_exact_caption_keys(dict(captions), styles)
+                return False
+    return True
+
+
+def _fireworks_validation_debug_writer(
+    task_id: str,
+    operation: str,
+    debug_dir: str | Path | None,
+    api_key: str,
+) -> Callable[[str, int, str], None] | None:
+    if debug_dir is None:
+        return None
+
+    def write_failed_response(model: str, attempt: int, response_text: str) -> None:
+        del model
+        output_path = Path(debug_dir) / f"{safe_task_id(task_id)}_fireworks_{operation}_attempt_{attempt}.txt"
+        sanitized = _sanitize_fireworks_debug_response(response_text, api_key)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(sanitized, encoding="utf-8")
+
+    return write_failed_response
+
+
+def _sanitize_fireworks_debug_response(response_text: str, api_key: str) -> str:
+    sanitized = response_text.replace(api_key, "[redacted]") if api_key else response_text
+    sanitized = re.sub(r"Bearer\s+\S+", "Bearer [redacted]", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(
+        r"data:image/[^;\s]+;base64,[A-Za-z0-9+/=]+",
+        "[redacted image data]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    return sanitized
 
 
 def _make_remaining_time_fn(

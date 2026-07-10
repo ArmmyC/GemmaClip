@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -365,29 +366,43 @@ class FireworksVisionClient:
         validator: Callable[[dict[str, Any]], Any],
         remaining_time_fn: Callable[[], float] | None = None,
         minimum_remaining_seconds: float = 0.0,
+        operation: str = "generation",
+        validation_failure_handler: Callable[[str, int, str], None] | None = None,
     ) -> Any:
         failures: list[str] = []
+        request_attempt = 0
         model_attempts = (
             (self._config.vision_model, 2),
             (self._config.fallback_vision_model, 1),
         )
         for model_index, (model, attempts) in enumerate(model_attempts):
             for attempt in range(1, attempts + 1):
+                response_text = ""
                 try:
                     self._ensure_attempt_budget(remaining_time_fn, minimum_remaining_seconds)
+                    request_attempt += 1
                     response_text = self._request_text(messages, model=model, attempt=attempt, temperature=temperature)
-                    result = validator(parse_json_object(response_text))
+                    try:
+                        response_object = parse_json_object(response_text)
+                    except ValueError as exc:
+                        raise ValueError("no JSON object found") from exc
+                    result = validator(response_object)
                     return result
                 except Exception as exc:
                     retryable = _is_retryable_fireworks_error(exc)
                     failures.append(f"{model}: {exc.__class__.__name__}")
+                    if response_text and isinstance(exc, ValueError) and validation_failure_handler is not None:
+                        validation_failure_handler(model, request_attempt, response_text)
                     LOGGER.warning(
-                        "Fireworks vision request provider=%s model=%s attempt=%s failed retryable=%s error=%s",
+                        "Fireworks vision operation=%s provider=%s model=%s attempt=%s failed retryable=%s "
+                        "exception=%s message=%s",
+                        operation,
                         self._config.provider,
                         model,
                         attempt,
                         retryable,
                         exc.__class__.__name__,
+                        _sanitize_fireworks_diagnostic(str(exc), self._config.api_key),
                     )
                     if attempt < attempts and retryable:
                         self._sleeper(0.5)
@@ -448,7 +463,12 @@ class FireworksVisionClient:
             response_payload = response.json()
             if not isinstance(response_payload, dict):
                 raise ValueError("Fireworks vision returned an unexpected response shape.")
-            return extract_message_text(response_payload)
+            try:
+                return extract_message_text(response_payload)
+            except ValueError as exc:
+                if "empty" in str(exc).lower():
+                    raise ValueError("response content empty") from exc
+                raise
         finally:
             LOGGER.info(
                 "Fireworks vision request provider=%s model=%s attempt=%s status_code=%s elapsed_seconds=%.3f",
@@ -1105,6 +1125,18 @@ def _is_retryable_fireworks_error(exc: Exception) -> bool:
         return exc.response.status_code in {429, 500, 502, 503, 504}
     # The provider contract requires one retry for malformed JSON and invalid caption structure.
     return isinstance(exc, ValueError)
+
+
+def _sanitize_fireworks_diagnostic(message: str, api_key: str) -> str:
+    sanitized = message.replace(api_key, "[redacted]") if api_key else message
+    sanitized = re.sub(r"Bearer\s+\S+", "Bearer [redacted]", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(
+        r"data:image/[^;\s]+;base64,[A-Za-z0-9+/=]+",
+        "[redacted image data]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    return " ".join(sanitized.split())[:300]
 
 
 def _upload_google_image_path(google_client: Any, image_path: Path) -> Any:

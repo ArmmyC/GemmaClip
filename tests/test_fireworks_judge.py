@@ -3,7 +3,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from gemmaclip.captioner import build_fireworks_judge_generation_messages, generate_captions
+from gemmaclip.captioner import (
+    _normalize_exact_caption_keys,
+    _validate_fireworks_judge_review,
+    build_fireworks_judge_generation_messages,
+    generate_captions,
+)
 from gemmaclip.frames import ExtractedFrame
 from gemmaclip.gemma_client import (
     DEFAULT_FIREWORKS_JUDGE_FALLBACK_VISION_MODEL,
@@ -363,3 +368,109 @@ def test_fireworks_judge_preserves_valid_first_captions_when_review_budget_expir
 
     assert captions == first
     assert client.calls == 1
+
+
+def test_fireworks_generation_extracts_only_requested_style_from_all_four_styles():
+    captions = _normalize_exact_caption_keys(
+        {
+            "formal": "A worker stands beside a desk in an office while looking toward a monitor.",
+            "sarcastic": "A worker stands beside a desk, delivering office excitement at its most restrained.",
+            "humorous_tech": "A worker stands beside a desk while the office buffer handles another quiet update.",
+            "humorous_non_tech": "A worker stands beside a desk while the day practices its smallest joke.",
+        },
+        ("formal",),
+    )
+
+    assert captions == {"formal": "A worker stands beside a desk in an office while looking toward a monitor."}
+
+
+def test_fireworks_generation_accepts_wrapped_captions_metadata_and_style_aliases():
+    wrapped = _normalize_exact_caption_keys(
+        {
+            "captions": {
+                "Humorous-Tech": "A worker sits at a desk while the office CPU quietly handles another routine task.",
+                "notes": "safe metadata",
+            },
+            "request_id": "ignored",
+        },
+        ("humorous_tech",),
+    )
+    non_tech = _normalize_exact_caption_keys(
+        {"humorous non tech": "A worker sits at a desk while the day rehearses one small office joke."},
+        ("humorous_non_tech",),
+    )
+
+    assert set(wrapped) == {"humorous_tech"}
+    assert set(non_tech) == {"humorous_non_tech"}
+
+
+def test_fireworks_generation_rejects_missing_requested_style():
+    with pytest.raises(ValueError, match="missing requested style: formal"):
+        _normalize_exact_caption_keys({"notes": "no caption"}, ("formal",))
+
+
+def test_fireworks_review_accepts_extra_styles_and_missing_scores(caplog):
+    first = initial_captions()
+    reviewed = _validate_fireworks_judge_review(
+        {
+            "captions": {
+                **first,
+                "humorous-tech": "An extra unrequested caption is harmless here because it is not requested.",
+            },
+            "scores": {
+                "formal": {"accuracy": 0.9, "style_match": 0.9},
+                "sarcastic": {"accuracy": 0.8, "style_match": 0.8},
+                "humorous_tech": {"accuracy": 0.7, "style_match": 0.7},
+            },
+            "metadata": "ignored",
+        },
+        ("formal", "sarcastic"),
+    )
+    caplog.set_level("WARNING")
+    without_scores = _validate_fireworks_judge_review({"captions": first}, ("formal", "sarcastic"))
+
+    assert reviewed == first
+    assert without_scores == first
+    assert "review scores unavailable" in caplog.text
+
+
+def test_fireworks_invalid_review_captions_preserve_first_generation(tmp_path):
+    first = initial_captions()
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: ScriptedJudgeClient([first, {"captions": {"formal": first["formal"]}}]),
+        remaining_seconds=300.0,
+    )
+
+    assert captions == first
+
+
+def test_fireworks_validation_diagnostics_are_sanitized_and_debug_response_is_saved(tmp_path, caplog):
+    secret = "do-not-log-this-key"
+    base64_data = "data:image/jpeg;base64,do-not-log-this-image"
+
+    class InvalidResponseClient:
+        def post(self, url, headers, json):
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            return httpx.Response(200, request=request, json={"choices": [{"message": {"content": "not json"}}]})
+
+    caplog.set_level("WARNING")
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path / "frames"),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": secret},
+        client_factory=lambda config: FireworksVisionClient(config, client=InvalidResponseClient(), sleeper=lambda delay: None),
+        debug_dir=tmp_path / "debug",
+        remaining_seconds=300.0,
+    )
+
+    debug_files = list((tmp_path / "debug").glob("clip-1_fireworks_generation_attempt_*.txt"))
+    assert captions["formal"].startswith("The video could not")
+    assert debug_files
+    assert debug_files[0].read_text(encoding="utf-8") == "not json"
+    assert "operation=generation" in caplog.text
+    assert "message=no JSON object found" in caplog.text
+    assert secret not in caplog.text
+    assert base64_data not in caplog.text
