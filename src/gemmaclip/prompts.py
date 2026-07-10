@@ -148,12 +148,52 @@ def build_fireworks_judge_generation_user_prompt(
         f"- Frame {index + 1}: timestamp_seconds={frame.timestamp_seconds:.3f}"
         for index, frame in enumerate(frames)
     ]
+    schema = {style: "<18-35 word caption>" for style in styles}
     return (
         f"Task ID: {task_id}\n"
         f"Requested styles: {', '.join(styles)}\n"
         "The following six image parts are separate chronological video frames, in the exact order listed.\n"
         f"{chr(10).join(frame_lines)}\n"
-        "Return only the requested caption JSON object."
+        "Return exactly this dynamic JSON object:\n"
+        f"{json.dumps(schema, indent=2)}\n"
+        "Every listed key is mandatory. Every key must appear exactly once. Do not omit sarcastic when it is "
+        "requested. Return no additional prose or markdown. Silently check all required keys before responding."
+    )
+
+
+def build_fireworks_judge_repair_system_prompt() -> str:
+    return (
+        "You are GemmaClip's focused caption repair writer. Use only the six separate chronological frames and the "
+        "valid captions provided as context. Return only the requested missing style keys as JSON. Do not rewrite or "
+        "return already valid styles. Every repaired caption must be 18 to 35 words, describe the same visible "
+        "subject and action as the retained captions, and remain factually grounded. sarcastic must be dry, ironic, "
+        "and lightly mocking. humorous_tech uses a natural common technology metaphor. humorous_non_tech uses "
+        "everyday humor without technical jargon. No markdown, analysis, dialogue, names, brands, motives, or "
+        "unseen actions."
+    )
+
+
+def build_fireworks_judge_repair_user_prompt(
+    task_id: str,
+    missing_styles: Sequence[str],
+    valid_captions: dict[str, str],
+    frames: Sequence[ExtractedFrame],
+) -> str:
+    frame_lines = [
+        f"- Frame {index + 1}: timestamp_seconds={frame.timestamp_seconds:.3f}"
+        for index, frame in enumerate(frames)
+    ]
+    schema = {style: "<18-35 word caption>" for style in missing_styles}
+    return (
+        f"Task ID: {task_id}\n"
+        f"The previous response produced valid captions for: {', '.join(valid_captions) or 'none'}.\n"
+        f"It omitted or invalidly produced: {', '.join(missing_styles)}.\n"
+        "Retained valid captions JSON:\n"
+        f"{json.dumps(valid_captions, indent=2)}\n"
+        "The following six image parts are separate chronological video frames, in the exact order listed.\n"
+        f"{chr(10).join(frame_lines)}\n"
+        "Return only this JSON object with exactly the missing or invalid style keys:\n"
+        f"{json.dumps(schema, indent=2)}"
     )
 
 

@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from io import BytesIO
 from pathlib import Path
 import tempfile
+from dataclasses import dataclass
 from typing import Any
 
 from PIL import Image, ImageChops, ImageOps
@@ -39,6 +40,8 @@ from gemmaclip.prompts import (
     build_google_visual_evidence_user_prompt,
     build_fireworks_judge_generation_system_prompt,
     build_fireworks_judge_generation_user_prompt,
+    build_fireworks_judge_repair_system_prompt,
+    build_fireworks_judge_repair_user_prompt,
     build_fireworks_judge_review_system_prompt,
     build_fireworks_judge_review_user_prompt,
     build_verifier_system_prompt,
@@ -64,6 +67,13 @@ _STYLE_KEY_ALIASES = {
     "humoroustech": "humorous_tech",
     "humorousnontech": "humorous_non_tech",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class FireworksCaptionExtraction:
+    valid_captions: dict[str, str]
+    missing_styles: list[str]
+    invalid_styles: list[str]
 BANNED_SPECULATION_PHRASES = (
     "likely",
     "probably",
@@ -472,6 +482,31 @@ def build_fireworks_judge_generation_messages(
     )
     return [
         {"role": "system", "content": build_fireworks_judge_generation_system_prompt()},
+        {"role": "user", "content": content},
+    ]
+
+
+def build_fireworks_judge_repair_messages(
+    task_id: str,
+    styles: Sequence[str],
+    valid_captions: dict[str, str],
+    frames: Sequence[ExtractedFrame],
+) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": build_fireworks_judge_repair_user_prompt(task_id, styles, valid_captions, frames),
+        }
+    ]
+    content.extend(
+        {
+            "type": "image_url",
+            "image_url": {"url": make_jpeg_data_url(frame.path)},
+        }
+        for frame in frames
+    )
+    return [
+        {"role": "system", "content": build_fireworks_judge_repair_system_prompt()},
         {"role": "user", "content": content},
     ]
 
@@ -1128,20 +1163,50 @@ def _generate_fireworks_judge_captions(
 
     client = client_factory(model_config)
     try:
-        captions = generate_fireworks_judge_direct_captions(
+        initial = generate_fireworks_judge_direct_captions(
             task,
             selected_frames,
             client,
             remaining_time_fn=remaining_time_fn,
             debug_dir=debug_dir,
             api_key=str(getattr(model_config, "api_key", "")),
+            primary_model=str(getattr(model_config, "vision_model", "")),
         )
     except Exception as exc:
         logger.warning("Task %s Fireworks judge generation failed; using fallback captions: %s", task.task_id, exc)
         return build_fallback_captions(task.styles)
 
     if debug_dir is not None:
-        write_captions_debug_file(task.task_id, captions, debug_dir, suffix="fireworks_raw")
+        write_fireworks_caption_extraction_debug_file(task.task_id, initial, debug_dir, suffix="initial")
+
+    captions = dict(initial.valid_captions)
+    outstanding_styles = _outstanding_fireworks_styles(initial)
+    if outstanding_styles:
+        repaired = _repair_fireworks_judge_captions(
+            task,
+            selected_frames,
+            client,
+            valid_captions=captions,
+            outstanding_styles=outstanding_styles,
+            remaining_time_fn=remaining_time_fn,
+            debug_dir=debug_dir,
+            api_key=str(getattr(model_config, "api_key", "")),
+            primary_model=str(getattr(model_config, "vision_model", "")),
+            fallback_model=str(getattr(model_config, "fallback_vision_model", "")),
+        )
+        captions.update(repaired.valid_captions)
+        if debug_dir is not None:
+            write_fireworks_caption_extraction_debug_file(task.task_id, repaired, debug_dir, suffix="repair")
+
+    if set(captions) != set(task.styles):
+        logger.warning(
+            "Task %s Fireworks judge generation remains incomplete after focused repair; using fallback captions.",
+            task.task_id,
+        )
+        return build_fallback_captions(task.styles)
+
+    if debug_dir is not None:
+        write_captions_debug_file(task.task_id, captions, debug_dir, suffix="fireworks_merged")
 
     remaining_seconds = remaining_time_fn()
     if remaining_seconds < FIREWORKS_JUDGE_SKIP_REVIEW_REMAINING_SECONDS:
@@ -1179,12 +1244,13 @@ def generate_fireworks_judge_direct_captions(
     remaining_time_fn: Callable[[], float],
     debug_dir: str | Path | None,
     api_key: str,
-) -> dict[str, str]:
+    primary_model: str,
+) -> FireworksCaptionExtraction:
     messages = build_fireworks_judge_generation_messages(task.task_id, task.styles, frames)
     return client.complete_json(
         messages,
-        temperature=0.65,
-        validator=lambda payload: _normalize_exact_caption_keys(payload, task.styles),
+        temperature=0.4,
+        validator=lambda payload: _extract_fireworks_caption_result(payload, task.styles),
         remaining_time_fn=remaining_time_fn,
         minimum_remaining_seconds=FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS,
         operation="generation",
@@ -1194,7 +1260,95 @@ def generate_fireworks_judge_direct_captions(
             debug_dir,
             api_key,
         ),
+        response_handler=_fireworks_response_debug_writer(task.task_id, "initial", debug_dir, api_key),
+        model_attempts=((primary_model, 1),),
     )
+
+
+def _repair_fireworks_judge_captions(
+    task: Task,
+    frames: Sequence[ExtractedFrame],
+    client: Any,
+    *,
+    valid_captions: dict[str, str],
+    outstanding_styles: Sequence[str],
+    remaining_time_fn: Callable[[], float],
+    debug_dir: str | Path | None,
+    api_key: str,
+    primary_model: str,
+    fallback_model: str,
+) -> FireworksCaptionExtraction:
+    primary_result = _run_fireworks_judge_repair_attempt(
+        task,
+        frames,
+        client,
+        valid_captions=valid_captions,
+        outstanding_styles=outstanding_styles,
+        remaining_time_fn=remaining_time_fn,
+        debug_dir=debug_dir,
+        api_key=api_key,
+        model=primary_model,
+        debug_operation="repair_primary",
+    )
+    merged = dict(valid_captions)
+    if primary_result is not None:
+        merged.update(primary_result.valid_captions)
+    remaining_styles = [style for style in outstanding_styles if style not in merged]
+    if not remaining_styles or not fallback_model:
+        return FireworksCaptionExtraction(merged, remaining_styles, [])
+
+    fallback_result = _run_fireworks_judge_repair_attempt(
+        task,
+        frames,
+        client,
+        valid_captions=merged,
+        outstanding_styles=remaining_styles,
+        remaining_time_fn=remaining_time_fn,
+        debug_dir=debug_dir,
+        api_key=api_key,
+        model=fallback_model,
+        debug_operation="repair_fallback",
+    )
+    if fallback_result is not None:
+        merged.update(fallback_result.valid_captions)
+    remaining_styles = [style for style in outstanding_styles if style not in merged]
+    return FireworksCaptionExtraction(merged, remaining_styles, [])
+
+
+def _run_fireworks_judge_repair_attempt(
+    task: Task,
+    frames: Sequence[ExtractedFrame],
+    client: Any,
+    *,
+    valid_captions: dict[str, str],
+    outstanding_styles: Sequence[str],
+    remaining_time_fn: Callable[[], float],
+    debug_dir: str | Path | None,
+    api_key: str,
+    model: str,
+    debug_operation: str,
+) -> FireworksCaptionExtraction | None:
+    messages = build_fireworks_judge_repair_messages(task.task_id, outstanding_styles, valid_captions, frames)
+    try:
+        return client.complete_json(
+            messages,
+            temperature=0.25,
+            validator=lambda payload: _extract_fireworks_caption_result(payload, outstanding_styles),
+            remaining_time_fn=remaining_time_fn,
+            minimum_remaining_seconds=FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS,
+            operation="repair",
+            validation_failure_handler=_fireworks_validation_debug_writer(
+                task.task_id,
+                "repair",
+                debug_dir,
+                api_key,
+            ),
+            response_handler=_fireworks_response_debug_writer(task.task_id, debug_operation, debug_dir, api_key),
+            model_attempts=((model, 1),),
+        )
+    except Exception as exc:
+        LOGGER.warning("Task %s Fireworks focused repair model %s failed: %s", task.task_id, model, exc)
+        return None
 
 
 def generate_fireworks_judge_review_captions(
@@ -1225,7 +1379,12 @@ def generate_fireworks_judge_review_captions(
 
 
 def _normalize_exact_caption_keys(payload: Mapping[str, Any], styles: Sequence[str]) -> dict[str, str]:
-    return _extract_requested_fireworks_captions(payload, styles)
+    extraction = _extract_fireworks_caption_result(payload, styles)
+    if extraction.missing_styles:
+        raise ValueError(f"missing requested style: {extraction.missing_styles[0]}")
+    if extraction.invalid_styles:
+        raise ValueError(f"invalid requested style: {extraction.invalid_styles[0]}")
+    return extraction.valid_captions
 
 
 def _validate_fireworks_judge_review(payload: Mapping[str, Any], styles: Sequence[str]) -> dict[str, str]:
@@ -1246,6 +1405,24 @@ def _extract_requested_fireworks_captions(
     *,
     review: bool = False,
 ) -> dict[str, str]:
+    extraction = _extract_fireworks_caption_result(payload, styles)
+    if extraction.missing_styles:
+        style = extraction.missing_styles[0]
+        if review:
+            raise ValueError(f"invalid review caption: {style}")
+        raise ValueError(f"missing requested style: {style}")
+    if extraction.invalid_styles:
+        style = extraction.invalid_styles[0]
+        if review:
+            raise ValueError(f"invalid review caption: {style}")
+        raise ValueError(f"invalid requested style: {style}")
+    return extraction.valid_captions
+
+
+def _extract_fireworks_caption_result(
+    payload: Mapping[str, Any],
+    styles: Sequence[str],
+) -> FireworksCaptionExtraction:
     source = payload.get("captions")
     caption_payload = source if isinstance(source, Mapping) else payload
     found: dict[str, Any] = {}
@@ -1257,22 +1434,25 @@ def _extract_requested_fireworks_captions(
             found[style] = value
 
     captions: dict[str, str] = {}
+    missing_styles: list[str] = []
+    invalid_styles: list[str] = []
     for style in styles:
         if style not in found:
-            if review:
-                raise ValueError(f"invalid review caption: {style}")
-            raise ValueError(f"missing requested style: {style}")
+            missing_styles.append(style)
+            continue
         value = found[style]
         if not isinstance(value, str):
-            if review:
-                raise ValueError(f"invalid review caption: {style}")
-            raise ValueError(f"requested style is not a string: {style}")
+            invalid_styles.append(style)
+            continue
         if not value.strip() or _is_invalid_caption_text(value):
-            if review:
-                raise ValueError(f"invalid review caption: {style}")
-            raise ValueError(f"invalid requested style: {style}")
-        captions[style] = value
-    return normalize_captions(captions, styles, {})
+            invalid_styles.append(style)
+            continue
+        captions[style] = cleanup_caption(value, style, {})
+    return FireworksCaptionExtraction(captions, missing_styles, invalid_styles)
+
+
+def _outstanding_fireworks_styles(extraction: FireworksCaptionExtraction) -> list[str]:
+    return [*extraction.missing_styles, *extraction.invalid_styles]
 
 
 def _normalize_fireworks_style_key(value: str) -> str | None:
@@ -1309,6 +1489,47 @@ def _fireworks_validation_debug_writer(
         output_path.write_text(sanitized, encoding="utf-8")
 
     return write_failed_response
+
+
+def _fireworks_response_debug_writer(
+    task_id: str,
+    operation: str,
+    debug_dir: str | Path | None,
+    api_key: str,
+) -> Callable[[str, int, str], None] | None:
+    if debug_dir is None:
+        return None
+
+    def write_response(model: str, attempt: int, response_text: str) -> None:
+        del model, attempt
+        output_path = Path(debug_dir) / f"{safe_task_id(task_id)}_fireworks_{operation}_raw.txt"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(_sanitize_fireworks_debug_response(response_text, api_key), encoding="utf-8")
+
+    return write_response
+
+
+def write_fireworks_caption_extraction_debug_file(
+    task_id: str,
+    extraction: FireworksCaptionExtraction,
+    debug_dir: str | Path,
+    *,
+    suffix: str,
+) -> Path:
+    output_path = Path(debug_dir) / f"{safe_task_id(task_id)}_fireworks_{suffix}_extraction.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(
+            {
+                "valid_captions": extraction.valid_captions,
+                "missing_styles": extraction.missing_styles,
+                "invalid_styles": extraction.invalid_styles,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return output_path
 
 
 def _sanitize_fireworks_debug_response(response_text: str, api_key: str) -> str:

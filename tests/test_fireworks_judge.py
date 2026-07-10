@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import httpx
+import json as json_module
 import pytest
 
 from gemmaclip.captioner import (
+    _extract_fireworks_caption_result,
     _normalize_exact_caption_keys,
     _validate_fireworks_judge_review,
     build_fireworks_judge_generation_messages,
@@ -23,6 +25,14 @@ from gemmaclip.io import Task
 
 def make_task() -> Task:
     return Task("clip-1", "https://example.com/video.mp4", ("formal", "sarcastic"))
+
+
+def make_all_styles_task() -> Task:
+    return Task(
+        "clip-1",
+        "https://example.com/video.mp4",
+        ("formal", "sarcastic", "humorous_tech", "humorous_non_tech"),
+    )
 
 
 def make_frames(tmp_path, count: int = 6) -> list[ExtractedFrame]:
@@ -51,6 +61,15 @@ def review_payload(captions: dict[str, str]) -> dict[str, object]:
             "sarcastic": {"accuracy": 0.92, "style_match": 0.91},
         },
         "captions": captions,
+    }
+
+
+def all_style_captions() -> dict[str, str]:
+    return {
+        "formal": "A worker sits at a desk in an office while looking toward a computer monitor.",
+        "sarcastic": "A worker sits at a desk and monitor, delivering office excitement at a remarkably cautious pace.",
+        "humorous_tech": "A worker sits at a desk while the office CPU handles another quiet background task near the monitor.",
+        "humorous_non_tech": "A worker sits at a desk while the day rehearses one small office joke beside the monitor.",
     }
 
 
@@ -474,3 +493,156 @@ def test_fireworks_validation_diagnostics_are_sanitized_and_debug_response_is_sa
     assert "message=no JSON object found" in caplog.text
     assert secret not in caplog.text
     assert base64_data not in caplog.text
+
+
+def test_fireworks_partial_extraction_retains_three_valid_captions_and_marks_missing_sarcastic():
+    captions = all_style_captions()
+    payload = dict(captions)
+    payload.pop("sarcastic")
+
+    extraction = _extract_fireworks_caption_result(payload, make_all_styles_task().styles)
+
+    assert extraction.valid_captions == {key: value for key, value in captions.items() if key != "sarcastic"}
+    assert extraction.missing_styles == ["sarcastic"]
+    assert extraction.invalid_styles == []
+
+
+def test_fireworks_focused_repair_merges_missing_sarcastic_without_replacing_valid_captions(tmp_path):
+    captions = all_style_captions()
+    initial = dict(captions)
+    initial.pop("sarcastic")
+    client = ScriptedJudgeClient([initial, {"sarcastic": captions["sarcastic"]}])
+
+    result = generate_captions(
+        make_all_styles_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: client,
+        remaining_seconds=149.0,
+    )
+
+    repair_text = client.messages[1][1]["content"][0]["text"]
+    assert result == captions
+    assert len(client.messages) == 2
+    assert "omitted or invalidly produced: sarcastic" in repair_text
+    assert "valid captions for: formal, humorous_tech, humorous_non_tech" in repair_text
+    assert '"sarcastic": "<18-35 word caption>"' in repair_text
+    assert '"formal": "<18-35 word caption>"' not in repair_text
+
+
+def test_fireworks_repairs_multiple_missing_styles_together(tmp_path):
+    captions = all_style_captions()
+    initial = {"formal": captions["formal"]}
+    repair = {key: value for key, value in captions.items() if key != "formal"}
+    client = ScriptedJudgeClient([initial, repair])
+
+    result = generate_captions(
+        make_all_styles_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: client,
+        remaining_seconds=149.0,
+    )
+
+    assert result == captions
+    assert "sarcastic, humorous_tech, humorous_non_tech" in client.messages[1][1]["content"][0]["text"]
+
+
+def test_fireworks_repairs_invalid_style_without_replacing_valid_styles(tmp_path):
+    captions = all_style_captions()
+    initial = dict(captions, humorous_tech=".")
+    client = ScriptedJudgeClient([initial, {"humorous_tech": captions["humorous_tech"]}])
+
+    result = generate_captions(
+        make_all_styles_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: client,
+        remaining_seconds=149.0,
+    )
+
+    assert result == captions
+    assert "humorous_tech" in client.messages[1][1]["content"][0]["text"]
+    assert result["formal"] == captions["formal"]
+
+
+def test_fireworks_complete_first_response_skips_repair_and_generation_schema_lists_all_keys(tmp_path):
+    captions = all_style_captions()
+    client = ScriptedJudgeClient([captions])
+    messages = build_fireworks_judge_generation_messages("clip-1", make_all_styles_task().styles, make_frames(tmp_path / "schema"))
+    result = generate_captions(
+        make_all_styles_task(),
+        make_frames(tmp_path / "run"),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: client,
+        remaining_seconds=149.0,
+    )
+
+    schema_text = messages[1]["content"][0]["text"]
+    assert result == captions
+    assert len(client.messages) == 1
+    for style in make_all_styles_task().styles:
+        assert f'"{style}": "<18-35 word caption>"' in schema_text
+    assert "Every listed key is mandatory" in schema_text
+
+
+def test_fireworks_qwen_receives_focused_repair_prompt_not_full_generation_prompt(tmp_path):
+    captions = all_style_captions()
+    initial = dict(captions)
+    initial.pop("sarcastic")
+
+    class RecordingClient:
+        def __init__(self):
+            self.calls: list[tuple[str, list[dict[str, object]]]] = []
+
+        def post(self, url, headers, json):
+            self.calls.append((json["model"], json["messages"]))
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            model = json["model"]
+            if len(self.calls) == 1:
+                content = json_module.dumps(initial)
+            elif model == "primary-model":
+                content = "not json"
+            else:
+                content = json_module.dumps({"sarcastic": captions["sarcastic"]})
+            return httpx.Response(200, request=request, json={"choices": [{"message": {"content": content}}]})
+
+    http_client = RecordingClient()
+    result = generate_captions(
+        make_all_styles_task(),
+        make_frames(tmp_path),
+        env={
+            "GEMMACLIP_PROVIDER": "fireworks_judge",
+            "FIREWORKS_API_KEY": "key",
+            "FIREWORKS_VISION_MODEL": "primary-model",
+            "FIREWORKS_FALLBACK_VISION_MODEL": "qwen-model",
+        },
+        client_factory=lambda config: FireworksVisionClient(config, client=http_client, sleeper=lambda delay: None),
+        remaining_seconds=149.0,
+    )
+
+    qwen_model, qwen_messages = http_client.calls[2]
+    qwen_system = qwen_messages[0]["content"]
+    qwen_text = qwen_messages[1]["content"][0]["text"]
+    assert result == captions
+    assert qwen_model == "qwen-model"
+    assert "focused caption repair writer" in qwen_system
+    assert "Return only this JSON object with exactly the missing or invalid style keys" in qwen_text
+    assert "Every listed key is mandatory" not in qwen_text
+
+
+def test_fireworks_repair_failure_uses_fallback_only_when_required_set_remains_incomplete(tmp_path):
+    captions = all_style_captions()
+    initial = dict(captions)
+    initial.pop("sarcastic")
+    client = ScriptedJudgeClient([initial, RuntimeError("repair failed"), RuntimeError("fallback failed")])
+
+    result = generate_captions(
+        make_all_styles_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: client,
+        remaining_seconds=149.0,
+    )
+
+    assert result["formal"].startswith("The video could not")

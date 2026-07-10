@@ -368,20 +368,24 @@ class FireworksVisionClient:
         minimum_remaining_seconds: float = 0.0,
         operation: str = "generation",
         validation_failure_handler: Callable[[str, int, str], None] | None = None,
+        response_handler: Callable[[str, int, str], None] | None = None,
+        model_attempts: Sequence[tuple[str, int]] | None = None,
     ) -> Any:
         failures: list[str] = []
         request_attempt = 0
-        model_attempts = (
+        configured_attempts = model_attempts or (
             (self._config.vision_model, 2),
             (self._config.fallback_vision_model, 1),
         )
-        for model_index, (model, attempts) in enumerate(model_attempts):
+        for model_index, (model, attempts) in enumerate(configured_attempts):
             for attempt in range(1, attempts + 1):
                 response_text = ""
                 try:
                     self._ensure_attempt_budget(remaining_time_fn, minimum_remaining_seconds)
                     request_attempt += 1
                     response_text = self._request_text(messages, model=model, attempt=attempt, temperature=temperature)
+                    if response_handler is not None:
+                        response_handler(model, request_attempt, response_text)
                     try:
                         response_object = parse_json_object(response_text)
                     except ValueError as exc:
@@ -409,7 +413,7 @@ class FireworksVisionClient:
                         continue
                     break
 
-            if model_index == 0:
+            if model_index == 0 and len(configured_attempts) > 1:
                 LOGGER.warning(
                     "Fireworks vision primary model %s failed; switching to configured fallback model %s.",
                     self._config.vision_model,
