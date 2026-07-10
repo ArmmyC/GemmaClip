@@ -21,6 +21,8 @@ from gemmaclip.gemma_client import (
     DEFAULT_PROVIDER_FIREWORKS_JUDGE,
     DEFAULT_PROVIDER_GOOGLE,
     DEFAULT_PROVIDER_OPENROUTER,
+    FireworksRuntimeBudgetError,
+    FireworksVisionRequestError,
     create_model_client,
     extract_json_objects,
     load_gemma_config,
@@ -1172,6 +1174,15 @@ def _generate_fireworks_judge_captions(
             api_key=str(getattr(model_config, "api_key", "")),
             primary_model=str(getattr(model_config, "vision_model", "")),
         )
+    except FireworksRuntimeBudgetError as exc:
+        logger.warning("Task %s Fireworks judge generation has insufficient runtime; using fallback captions: %s", task.task_id, exc)
+        return build_fallback_captions(task.styles)
+    except FireworksVisionRequestError as exc:
+        if not exc.retryable:
+            logger.warning("Task %s Fireworks judge generation failed without retry eligibility; using fallback captions: %s", task.task_id, exc)
+            return build_fallback_captions(task.styles)
+        logger.warning("Task %s Fireworks judge generation failed retryably; continuing with focused repair: %s", task.task_id, exc)
+        initial = FireworksCaptionExtraction({}, list(task.styles), [])
     except Exception as exc:
         logger.warning("Task %s Fireworks judge generation failed; using fallback captions: %s", task.task_id, exc)
         return build_fallback_captions(task.styles)

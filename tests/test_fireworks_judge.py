@@ -17,6 +17,7 @@ from gemmaclip.gemma_client import (
     DEFAULT_FIREWORKS_JUDGE_VISION_MODEL,
     DEFAULT_PROVIDER_FIREWORKS_JUDGE,
     FireworksJudgeConfig,
+    FireworksRuntimeBudgetError,
     FireworksVisionClient,
     load_gemma_config,
 )
@@ -319,7 +320,7 @@ def test_fireworks_vision_skips_primary_retry_when_deadline_becomes_too_close():
         sleeper=lambda delay: None,
     )
 
-    with pytest.raises(RuntimeError, match="Fireworks vision request failed"):
+    with pytest.raises(FireworksRuntimeBudgetError, match="Only 64.0s remain"):
         client.complete_json(
             [{"role": "user", "content": "hello"}],
             temperature=0.6,
@@ -351,7 +352,7 @@ def test_fireworks_vision_skips_fallback_model_when_deadline_becomes_too_close()
         sleeper=lambda delay: None,
     )
 
-    with pytest.raises(RuntimeError, match="Fireworks vision request failed"):
+    with pytest.raises(FireworksRuntimeBudgetError, match="Only 64.0s remain"):
         client.complete_json(
             [{"role": "user", "content": "hello"}],
             temperature=0.6,
@@ -646,3 +647,104 @@ def test_fireworks_repair_failure_uses_fallback_only_when_required_set_remains_i
     )
 
     assert result["formal"].startswith("The video could not")
+
+
+def test_fireworks_initial_no_json_continues_to_successful_all_style_minimax_repair(tmp_path):
+    captions = all_style_captions()
+
+    class NoJsonThenRepairClient:
+        def __init__(self):
+            self.models: list[str] = []
+
+        def post(self, url, headers, json):
+            self.models.append(json["model"])
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            content = "not json" if len(self.models) == 1 else json_module.dumps(captions)
+            return httpx.Response(200, request=request, json={"choices": [{"message": {"content": content}}]})
+
+    http_client = NoJsonThenRepairClient()
+    result = generate_captions(
+        make_all_styles_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key", "FIREWORKS_VISION_MODEL": "primary-model"},
+        client_factory=lambda config: FireworksVisionClient(config, client=http_client, sleeper=lambda delay: None),
+        remaining_seconds=149.0,
+    )
+
+    assert result == captions
+    assert http_client.models == ["primary-model", "primary-model"]
+
+
+def test_fireworks_initial_timeout_continues_to_successful_qwen_repair(tmp_path):
+    captions = all_style_captions()
+
+    class TimeoutThenQwenClient:
+        def __init__(self):
+            self.models: list[str] = []
+
+        def post(self, url, headers, json):
+            self.models.append(json["model"])
+            if json["model"] == "qwen-model":
+                request = httpx.Request("POST", url, json=json, headers=headers)
+                return httpx.Response(200, request=request, json={"choices": [{"message": {"content": json_module.dumps(captions)}}]})
+            raise httpx.ReadTimeout("timeout")
+
+    http_client = TimeoutThenQwenClient()
+    result = generate_captions(
+        make_all_styles_task(),
+        make_frames(tmp_path),
+        env={
+            "GEMMACLIP_PROVIDER": "fireworks_judge",
+            "FIREWORKS_API_KEY": "key",
+            "FIREWORKS_VISION_MODEL": "primary-model",
+            "FIREWORKS_FALLBACK_VISION_MODEL": "qwen-model",
+        },
+        client_factory=lambda config: FireworksVisionClient(config, client=http_client, sleeper=lambda delay: None),
+        remaining_seconds=149.0,
+    )
+
+    assert result == captions
+    assert http_client.models == ["primary-model", "primary-model", "qwen-model"]
+
+
+def test_fireworks_initial_authentication_failure_does_not_start_repair(tmp_path):
+    class AuthenticationFailureClient:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, headers, json):
+            self.calls += 1
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            return httpx.Response(401, request=request, json={"error": "unauthorized"})
+
+    http_client = AuthenticationFailureClient()
+    result = generate_captions(
+        make_all_styles_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: FireworksVisionClient(config, client=http_client, sleeper=lambda delay: None),
+        remaining_seconds=149.0,
+    )
+
+    assert result["formal"].startswith("The video could not")
+    assert http_client.calls == 1
+
+
+def test_fireworks_runtime_budget_failure_does_not_start_repair(tmp_path):
+    calls = {"count": 0}
+
+    class RuntimeBudgetFailureClient:
+        def complete_json(self, messages, *, temperature, validator, **kwargs):
+            calls["count"] += 1
+            raise FireworksRuntimeBudgetError("deadline exhausted")
+
+    result = generate_captions(
+        make_all_styles_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: RuntimeBudgetFailureClient(),
+        remaining_seconds=149.0,
+    )
+
+    assert result["formal"].startswith("The video could not")
+    assert calls["count"] == 1

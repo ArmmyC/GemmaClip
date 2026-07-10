@@ -335,6 +335,14 @@ class FireworksRuntimeBudgetError(RuntimeError):
     """Raised before an API attempt when the batch deadline no longer permits it."""
 
 
+class FireworksVisionRequestError(RuntimeError):
+    """A failed Fireworks operation with a retained retryability classification."""
+
+    def __init__(self, message: str, *, retryable: bool) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
 class FireworksVisionClient:
     """OpenAI-compatible multimodal client with explicit model fallback policy."""
 
@@ -372,6 +380,8 @@ class FireworksVisionClient:
         model_attempts: Sequence[tuple[str, int]] | None = None,
     ) -> Any:
         failures: list[str] = []
+        last_error: Exception | None = None
+        had_retryable_failure = False
         request_attempt = 0
         configured_attempts = model_attempts or (
             (self._config.vision_model, 2),
@@ -392,8 +402,12 @@ class FireworksVisionClient:
                         raise ValueError("no JSON object found") from exc
                     result = validator(response_object)
                     return result
+                except FireworksRuntimeBudgetError:
+                    raise
                 except Exception as exc:
                     retryable = _is_retryable_fireworks_error(exc)
+                    last_error = exc
+                    had_retryable_failure = had_retryable_failure or retryable
                     failures.append(f"{model}: {exc.__class__.__name__}")
                     if response_text and isinstance(exc, ValueError) and validation_failure_handler is not None:
                         validation_failure_handler(model, request_attempt, response_text)
@@ -420,7 +434,13 @@ class FireworksVisionClient:
                     self._config.fallback_vision_model,
                 )
 
-        raise RuntimeError(f"Fireworks vision request failed for configured models: {', '.join(failures)}")
+        error = FireworksVisionRequestError(
+            f"Fireworks vision request failed for configured models: {', '.join(failures)}",
+            retryable=had_retryable_failure,
+        )
+        if last_error is not None:
+            raise error from last_error
+        raise error
 
     @staticmethod
     def _ensure_attempt_budget(
