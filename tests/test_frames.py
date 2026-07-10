@@ -87,7 +87,7 @@ def test_aks_lite_first_and_last_bins_are_represented(tmp_path):
 
 
 def test_uniform_strategy_still_works(tmp_path, monkeypatch):
-    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None):
+    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None, **kwargs):
         image = Image.new("RGB", (80, 45), color="blue")
         image.save(output_path, format="JPEG", quality=85)
 
@@ -107,7 +107,7 @@ def test_uniform_strategy_still_works(tmp_path, monkeypatch):
 
 
 def test_aks_lite_extract_frames_integration(tmp_path, monkeypatch):
-    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None):
+    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None, **kwargs):
         red = int((timestamp * 37) % 255)
         green = int((timestamp * 61) % 255)
         blue = int((timestamp * 89) % 255)
@@ -140,7 +140,7 @@ def test_aks_lite_extract_frames_integration(tmp_path, monkeypatch):
 def test_google_v7_fast_mode_extracts_only_six_frames(tmp_path, monkeypatch):
     extracted_widths: list[int | None] = []
 
-    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None):
+    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None, **kwargs):
         extracted_widths.append(output_width)
         image = Image.new("RGB", (160, 90), color="green")
         image.save(output_path, format="JPEG", quality=85)
@@ -164,7 +164,7 @@ def test_google_v7_fast_mode_extracts_only_six_frames(tmp_path, monkeypatch):
 def test_google_v7_fast_mode_uses_six_timestamp_seeks_based_on_duration(tmp_path, monkeypatch):
     extracted_timestamps: list[float] = []
 
-    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None):
+    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None, **kwargs):
         extracted_timestamps.append(timestamp)
         image = Image.new("RGB", (160, 90), color="purple")
         image.save(output_path, format="JPEG", quality=85)
@@ -182,3 +182,26 @@ def test_google_v7_fast_mode_uses_six_timestamp_seeks_based_on_duration(tmp_path
 
     assert [frame.timestamp_seconds for frame in frames] == extracted_timestamps
     assert extracted_timestamps == [5.0, 20.0, 35.0, 55.0, 75.0, 95.0]
+
+
+def test_fireworks_judge_uses_exactly_six_separate_frames_with_requested_timestamps(tmp_path, monkeypatch):
+    extracted_timestamps: list[float] = []
+    extracted_widths: list[int | None] = []
+
+    def fake_extract_frame(video_path, output_path, timestamp, ffmpeg_binary="ffmpeg", output_width=None, **kwargs):
+        extracted_timestamps.append(timestamp)
+        extracted_widths.append(output_width)
+        Image.new("RGB", (512, 288), color="orange").save(output_path, format="JPEG", quality=95)
+
+    monkeypatch.setattr("gemmaclip.frames._extract_frame", fake_extract_frame)
+    frames = extract_frames(
+        "clip-1",
+        tmp_path / "video.mp4",
+        VideoMetadata(duration_seconds=100.0, fps=24.0, width=1920, height=1080, frame_count=2400),
+        destination_root=tmp_path / "frames",
+        fireworks_judge=True,
+    )
+
+    assert len(frames) == 6
+    assert extracted_timestamps == [5.0, 23.0, 41.0, 59.0, 77.0, 95.0]
+    assert extracted_widths == [512, 512, 512, 512, 512, 512]

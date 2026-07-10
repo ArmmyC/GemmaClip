@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import gemmaclip.main as main_module
 from gemmaclip.frames import ExtractedFrame
 from gemmaclip.io import Task
 from gemmaclip.main import build_progress_results, process_task, process_tasks, should_fill_remaining_with_fallbacks
@@ -64,6 +65,23 @@ def test_process_tasks_writes_results_after_each_task(tmp_path, monkeypatch):
     assert write_calls[0][0]["task_id"] == "clip-1"
     assert write_calls[0][1]["task_id"] == "clip-2"
     assert write_calls[0][1]["captions"]["formal"]
+
+
+def test_main_writes_fallbacks_before_processing_tasks(tmp_path, monkeypatch):
+    tasks = make_tasks()[:2]
+    write_calls: list[list[dict[str, object]]] = []
+
+    monkeypatch.setattr(main_module, "read_tasks", lambda path: tasks)
+    monkeypatch.setattr(main_module, "write_results", lambda results, output_path: write_calls.append(results))
+
+    def fake_process_tasks(received_tasks, **kwargs):
+        assert received_tasks == tasks
+        assert len(write_calls) == 1
+        assert all(result["captions"]["formal"] for result in write_calls[0])
+
+    monkeypatch.setattr(main_module, "process_tasks", fake_process_tasks)
+
+    assert main_module.main(["--input", str(tmp_path / "tasks.json"), "--output", str(tmp_path / "results.json")]) == 0
 
 
 def test_process_tasks_deadline_fills_remaining_tasks_with_fallbacks(tmp_path, monkeypatch):
@@ -162,10 +180,10 @@ def test_process_task_uses_google_fast_frame_extraction(tmp_path, monkeypatch):
     frame_path = tmp_path / "frame_001.jpg"
     frame_path.write_bytes(b"jpeg")
 
-    monkeypatch.setattr("gemmaclip.main.download_video", lambda task: tmp_path / "video.mp4")
+    monkeypatch.setattr("gemmaclip.main.download_video", lambda task, **kwargs: tmp_path / "video.mp4")
     monkeypatch.setattr(
         "gemmaclip.main.probe_video",
-        lambda video_path: VideoMetadata(duration_seconds=100.0, fps=24.0, width=1920, height=1080, frame_count=2400),
+        lambda video_path, **kwargs: VideoMetadata(duration_seconds=100.0, fps=24.0, width=1920, height=1080, frame_count=2400),
     )
 
     def fake_extract_frames(task_id, video_path, metadata, **kwargs):
@@ -197,10 +215,10 @@ def test_process_task_fireworks_path_uses_standard_frame_extraction(tmp_path, mo
     frame_path = tmp_path / "frame_001.jpg"
     frame_path.write_bytes(b"jpeg")
 
-    monkeypatch.setattr("gemmaclip.main.download_video", lambda task: tmp_path / "video.mp4")
+    monkeypatch.setattr("gemmaclip.main.download_video", lambda task, **kwargs: tmp_path / "video.mp4")
     monkeypatch.setattr(
         "gemmaclip.main.probe_video",
-        lambda video_path: VideoMetadata(duration_seconds=20.0, fps=24.0, width=1920, height=1080, frame_count=480),
+        lambda video_path, **kwargs: VideoMetadata(duration_seconds=20.0, fps=24.0, width=1920, height=1080, frame_count=480),
     )
 
     def fake_extract_frames(task_id, video_path, metadata, **kwargs):
@@ -232,10 +250,10 @@ def test_process_task_openrouter_path_uses_fast_frame_extraction(tmp_path, monke
     frame_path = tmp_path / "frame_001.jpg"
     frame_path.write_bytes(b"jpeg")
 
-    monkeypatch.setattr("gemmaclip.main.download_video", lambda task: tmp_path / "video.mp4")
+    monkeypatch.setattr("gemmaclip.main.download_video", lambda task, **kwargs: tmp_path / "video.mp4")
     monkeypatch.setattr(
         "gemmaclip.main.probe_video",
-        lambda video_path: VideoMetadata(duration_seconds=100.0, fps=24.0, width=1920, height=1080, frame_count=2400),
+        lambda video_path, **kwargs: VideoMetadata(duration_seconds=100.0, fps=24.0, width=1920, height=1080, frame_count=2400),
     )
 
     def fake_extract_frames(task_id, video_path, metadata, **kwargs):

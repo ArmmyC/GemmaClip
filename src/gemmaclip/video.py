@@ -17,7 +17,11 @@ class VideoMetadata:
     frame_count: int | None
 
 
-def probe_video(video_path: str | Path, ffprobe_binary: str = "ffprobe") -> VideoMetadata:
+def probe_video(
+    video_path: str | Path,
+    ffprobe_binary: str = "ffprobe",
+    timeout_seconds: float = 15.0,
+) -> VideoMetadata:
     path = Path(video_path)
     command = [
         ffprobe_binary,
@@ -39,11 +43,14 @@ def probe_video(video_path: str | Path, ffprobe_binary: str = "ffprobe") -> Vide
             check=True,
             capture_output=True,
             text=True,
+            timeout=timeout_seconds,
         )
     except FileNotFoundError as exc:
         raise RuntimeError("ffprobe is not installed or not available on PATH.") from exc
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"ffprobe failed for {path}: {exc.stderr.strip()}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffprobe timed out after {timeout_seconds:.0f} seconds for {path}.") from exc
 
     try:
         payload = json.loads(completed.stdout)

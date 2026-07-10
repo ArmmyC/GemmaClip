@@ -16,6 +16,7 @@ from PIL import Image, ImageChops, ImageOps
 from gemmaclip.frames import ExtractedFrame
 from gemmaclip.gemma_client import (
     DEFAULT_PROVIDER_FIREWORKS,
+    DEFAULT_PROVIDER_FIREWORKS_JUDGE,
     DEFAULT_PROVIDER_GOOGLE,
     DEFAULT_PROVIDER_OPENROUTER,
     create_model_client,
@@ -35,6 +36,10 @@ from gemmaclip.prompts import (
     build_evidence_system_prompt,
     build_evidence_user_prompt,
     build_google_visual_evidence_user_prompt,
+    build_fireworks_judge_generation_system_prompt,
+    build_fireworks_judge_generation_user_prompt,
+    build_fireworks_judge_review_system_prompt,
+    build_fireworks_judge_review_user_prompt,
     build_verifier_system_prompt,
     build_verifier_user_prompt,
 )
@@ -46,6 +51,8 @@ MAX_CAPTION_WORDS = 40
 MAX_CAPTION_ATTEMPTS = 3
 GOOGLE_CONTACT_SHEET_CELL_MAX_SIDE = 384
 GOOGLE_DESCRIPTION_FIRST_MIN_REMAINING_SECONDS = 120.0
+FIREWORKS_JUDGE_SKIP_REVIEW_REMAINING_SECONDS = 150.0
+FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS = 45.0
 BANNED_SPECULATION_PHRASES = (
     "likely",
     "probably",
@@ -163,6 +170,16 @@ def generate_captions(
             client_factory=client_factory,
             model_config=config.text_model_config(),
             google_fallback_config=load_google_provider_config(values),
+            remaining_seconds=remaining_seconds,
+        )
+    if config.provider == DEFAULT_PROVIDER_FIREWORKS_JUDGE:
+        return _generate_fireworks_judge_captions(
+            task,
+            frames,
+            debug_dir=debug_dir,
+            logger=active_logger,
+            client_factory=client_factory,
+            model_config=config,
             remaining_seconds=remaining_seconds,
         )
 
@@ -422,6 +439,49 @@ def build_direct_caption_messages(
                 },
             ],
         },
+    ]
+
+
+def build_fireworks_judge_generation_messages(
+    task_id: str,
+    styles: Sequence[str],
+    frames: Sequence[ExtractedFrame],
+) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = [
+        {"type": "text", "text": build_fireworks_judge_generation_user_prompt(task_id, styles, frames)}
+    ]
+    content.extend(
+        {
+            "type": "image_url",
+            "image_url": {"url": make_jpeg_data_url(frame.path)},
+        }
+        for frame in frames
+    )
+    return [
+        {"role": "system", "content": build_fireworks_judge_generation_system_prompt()},
+        {"role": "user", "content": content},
+    ]
+
+
+def build_fireworks_judge_review_messages(
+    task_id: str,
+    styles: Sequence[str],
+    frames: Sequence[ExtractedFrame],
+    captions: dict[str, str],
+) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = [
+        {"type": "text", "text": build_fireworks_judge_review_user_prompt(task_id, styles, frames, captions)}
+    ]
+    content.extend(
+        {
+            "type": "image_url",
+            "image_url": {"url": make_jpeg_data_url(frame.path)},
+        }
+        for frame in frames
+    )
+    return [
+        {"role": "system", "content": build_fireworks_judge_review_system_prompt()},
+        {"role": "user", "content": content},
     ]
 
 
@@ -1014,6 +1074,124 @@ def select_google_evidence_frames(
         }
     )
     return [ordered_frames[index] for index in selected_indices]
+
+
+def select_fireworks_judge_frames(frames: Sequence[ExtractedFrame]) -> list[ExtractedFrame]:
+    ordered_frames = list(frames)
+    if len(ordered_frames) <= 6:
+        return ordered_frames
+
+    last_index = len(ordered_frames) - 1
+    ratios = (0.05, 0.23, 0.41, 0.59, 0.77, 0.95)
+    return [ordered_frames[min(last_index, max(0, round(last_index * ratio)))] for ratio in ratios]
+
+
+def _generate_fireworks_judge_captions(
+    task: Task,
+    frames: Sequence[ExtractedFrame],
+    *,
+    debug_dir: str | Path | None,
+    logger: logging.Logger,
+    client_factory: Callable[[Any], Any],
+    model_config: Any,
+    remaining_seconds: float | None,
+) -> dict[str, str]:
+    if remaining_seconds is not None and remaining_seconds < FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS:
+        logger.warning(
+            "Task %s has only %.1fs remaining; skipping Fireworks judge generation for safe fallback output.",
+            task.task_id,
+            remaining_seconds,
+        )
+        return build_fallback_captions(task.styles)
+
+    selected_frames = select_fireworks_judge_frames(frames)
+    if len(selected_frames) != 6:
+        logger.warning(
+            "Task %s did not provide six Fireworks judge frames; using fallback captions.",
+            task.task_id,
+        )
+        return build_fallback_captions(task.styles)
+
+    client = client_factory(model_config)
+    try:
+        captions = generate_fireworks_judge_direct_captions(task, selected_frames, client)
+    except Exception as exc:
+        logger.warning("Task %s Fireworks judge generation failed; using fallback captions: %s", task.task_id, exc)
+        return build_fallback_captions(task.styles)
+
+    if debug_dir is not None:
+        write_captions_debug_file(task.task_id, captions, debug_dir, suffix="fireworks_raw")
+
+    if remaining_seconds is not None and remaining_seconds < FIREWORKS_JUDGE_SKIP_REVIEW_REMAINING_SECONDS:
+        logger.info(
+            "Task %s skipping Fireworks judge review because remaining time is %.1fs.",
+            task.task_id,
+            remaining_seconds,
+        )
+        return captions
+
+    try:
+        final_captions = generate_fireworks_judge_review_captions(task, selected_frames, captions, client)
+    except Exception as exc:
+        logger.warning("Task %s Fireworks judge review failed; preserving first captions: %s", task.task_id, exc)
+        return captions
+
+    if debug_dir is not None:
+        write_captions_debug_file(task.task_id, final_captions, debug_dir, suffix="fireworks_judged")
+    return final_captions
+
+
+def generate_fireworks_judge_direct_captions(
+    task: Task,
+    frames: Sequence[ExtractedFrame],
+    client: Any,
+) -> dict[str, str]:
+    messages = build_fireworks_judge_generation_messages(task.task_id, task.styles, frames)
+    return client.complete_json(
+        messages,
+        temperature=0.65,
+        validator=lambda payload: _normalize_exact_caption_keys(payload, task.styles),
+    )
+
+
+def generate_fireworks_judge_review_captions(
+    task: Task,
+    frames: Sequence[ExtractedFrame],
+    captions: dict[str, str],
+    client: Any,
+) -> dict[str, str]:
+    messages = build_fireworks_judge_review_messages(task.task_id, task.styles, frames, captions)
+    return client.complete_json(
+        messages,
+        temperature=0.25,
+        validator=lambda payload: _validate_fireworks_judge_review(payload, task.styles),
+    )
+
+
+def _normalize_exact_caption_keys(payload: Mapping[str, Any], styles: Sequence[str]) -> dict[str, str]:
+    if set(payload) != set(styles):
+        raise ValueError("Fireworks judge response must include exactly the requested style keys.")
+    return normalize_captions(dict(payload), styles, {})
+
+
+def _validate_fireworks_judge_review(payload: Mapping[str, Any], styles: Sequence[str]) -> dict[str, str]:
+    if set(payload) != {"scores", "captions"}:
+        raise ValueError("Fireworks judge review response must contain only scores and captions.")
+    scores = payload.get("scores")
+    captions = payload.get("captions")
+    if not isinstance(scores, Mapping) or set(scores) != set(styles):
+        raise ValueError("Fireworks judge review scores must match requested styles.")
+    for style in styles:
+        score = scores.get(style)
+        if not isinstance(score, Mapping):
+            raise ValueError(f"Fireworks judge review score is invalid for {style}.")
+        for score_name in ("accuracy", "style_match"):
+            value = score.get(score_name)
+            if not isinstance(value, (int, float)) or not 0.0 <= float(value) <= 1.0:
+                raise ValueError(f"Fireworks judge review {score_name} is invalid for {style}.")
+    if not isinstance(captions, Mapping):
+        raise ValueError("Fireworks judge review captions must be an object.")
+    return _normalize_exact_caption_keys(dict(captions), styles)
 
 
 def _generate_google_fast_captions(

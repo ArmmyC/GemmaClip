@@ -15,6 +15,7 @@ MAX_GEMMA_FRAMES = 12
 GOOGLE_FAST_FRAME_COUNT = 6
 GOOGLE_FAST_FRAME_WIDTH = 512
 GOOGLE_FAST_FRAME_RATIOS = (0.05, 0.20, 0.35, 0.55, 0.75, 0.95)
+FIREWORKS_JUDGE_FRAME_RATIOS = (0.05, 0.23, 0.41, 0.59, 0.77, 0.95)
 VALID_FRAME_STRATEGIES = {"uniform", "aks-lite"}
 
 
@@ -60,7 +61,19 @@ def extract_frames(
     destination_root: Path = DEFAULT_FRAMES_DIR,
     ffmpeg_binary: str = "ffmpeg",
     google_fast: bool = False,
+    fireworks_judge: bool = False,
+    command_timeout_seconds: float = 15.0,
 ) -> list[ExtractedFrame]:
+    if fireworks_judge:
+        return extract_fireworks_judge_frames(
+            task_id,
+            video_path,
+            metadata,
+            destination_root=destination_root,
+            ffmpeg_binary=ffmpeg_binary,
+            command_timeout_seconds=command_timeout_seconds,
+        )
+
     if google_fast:
         return extract_google_fast_frames(
             task_id,
@@ -68,6 +81,7 @@ def extract_frames(
             metadata,
             destination_root=destination_root,
             ffmpeg_binary=ffmpeg_binary,
+            command_timeout_seconds=command_timeout_seconds,
         )
 
     if strategy not in VALID_FRAME_STRATEGIES:
@@ -80,6 +94,7 @@ def extract_frames(
             metadata,
             destination_root=destination_root,
             ffmpeg_binary=ffmpeg_binary,
+            command_timeout_seconds=command_timeout_seconds,
         )
 
     return extract_aks_lite_frames(
@@ -88,6 +103,7 @@ def extract_frames(
         metadata,
         destination_root=destination_root,
         ffmpeg_binary=ffmpeg_binary,
+        command_timeout_seconds=command_timeout_seconds,
     )
 
 
@@ -98,6 +114,7 @@ def extract_google_fast_frames(
     destination_root: Path = DEFAULT_FRAMES_DIR,
     ffmpeg_binary: str = "ffmpeg",
     max_width: int = GOOGLE_FAST_FRAME_WIDTH,
+    command_timeout_seconds: float = 15.0,
 ) -> list[ExtractedFrame]:
     video_file = Path(video_path)
     destination_dir = destination_root / safe_task_id(task_id)
@@ -111,6 +128,32 @@ def extract_google_fast_frames(
         prefix="frame",
         ffmpeg_binary=ffmpeg_binary,
         output_width=max_width,
+        command_timeout_seconds=command_timeout_seconds,
+    )
+
+
+def extract_fireworks_judge_frames(
+    task_id: str,
+    video_path: str | Path,
+    metadata: VideoMetadata,
+    destination_root: Path = DEFAULT_FRAMES_DIR,
+    ffmpeg_binary: str = "ffmpeg",
+    max_width: int = GOOGLE_FAST_FRAME_WIDTH,
+    command_timeout_seconds: float = 15.0,
+) -> list[ExtractedFrame]:
+    video_file = Path(video_path)
+    destination_dir = destination_root / safe_task_id(task_id)
+    _prepare_destination_dir(destination_dir)
+
+    timestamps = _fixed_ratio_timestamps(metadata.duration_seconds, FIREWORKS_JUDGE_FRAME_RATIOS)
+    return _extract_frames_at_timestamps(
+        video_file,
+        destination_dir,
+        timestamps,
+        prefix="frame",
+        ffmpeg_binary=ffmpeg_binary,
+        output_width=max_width,
+        command_timeout_seconds=command_timeout_seconds,
     )
 
 
@@ -120,6 +163,7 @@ def extract_uniform_frames(
     metadata: VideoMetadata,
     destination_root: Path = DEFAULT_FRAMES_DIR,
     ffmpeg_binary: str = "ffmpeg",
+    command_timeout_seconds: float = 15.0,
 ) -> list[ExtractedFrame]:
     video_file = Path(video_path)
     destination_dir = destination_root / safe_task_id(task_id)
@@ -133,6 +177,7 @@ def extract_uniform_frames(
         timestamps,
         prefix="frame",
         ffmpeg_binary=ffmpeg_binary,
+        command_timeout_seconds=command_timeout_seconds,
     )
 
 
@@ -142,6 +187,7 @@ def extract_aks_lite_frames(
     metadata: VideoMetadata,
     destination_root: Path = DEFAULT_FRAMES_DIR,
     ffmpeg_binary: str = "ffmpeg",
+    command_timeout_seconds: float = 15.0,
 ) -> list[ExtractedFrame]:
     video_file = Path(video_path)
     destination_dir = destination_root / safe_task_id(task_id)
@@ -157,6 +203,7 @@ def extract_aks_lite_frames(
         candidate_timestamps,
         prefix="candidate",
         ffmpeg_binary=ffmpeg_binary,
+        command_timeout_seconds=command_timeout_seconds,
     )
     selected_candidates = select_aks_lite_frames(candidates, max_frames=MAX_GEMMA_FRAMES)
 
@@ -290,6 +337,7 @@ def _extract_frames_at_timestamps(
     prefix: str,
     ffmpeg_binary: str,
     output_width: int | None = None,
+    command_timeout_seconds: float = 15.0,
 ) -> list[ExtractedFrame]:
     destination_dir.mkdir(parents=True, exist_ok=True)
     for stale_frame in destination_dir.glob("*.jpg"):
@@ -304,6 +352,7 @@ def _extract_frames_at_timestamps(
             timestamp,
             ffmpeg_binary=ffmpeg_binary,
             output_width=output_width,
+            timeout_seconds=command_timeout_seconds,
         )
         frames.append(ExtractedFrame(path=output_path, timestamp_seconds=timestamp))
     return frames
@@ -426,13 +475,17 @@ def _uniform_timestamps(duration_seconds: float, frame_count: int) -> list[float
 
 
 def _google_fast_timestamps(duration_seconds: float) -> list[float]:
+    return _fixed_ratio_timestamps(duration_seconds, GOOGLE_FAST_FRAME_RATIOS[:GOOGLE_FAST_FRAME_COUNT])
+
+
+def _fixed_ratio_timestamps(duration_seconds: float, ratios: tuple[float, ...]) -> list[float]:
     if duration_seconds <= 0:
         raise ValueError("Video duration must be positive.")
 
     upper_bound = max(duration_seconds - 0.001, 0.0)
     return [
         round(min(duration_seconds * ratio, upper_bound), 3)
-        for ratio in GOOGLE_FAST_FRAME_RATIOS[:GOOGLE_FAST_FRAME_COUNT]
+        for ratio in ratios
     ]
 
 
@@ -442,6 +495,7 @@ def _extract_frame(
     timestamp: float,
     ffmpeg_binary: str = "ffmpeg",
     output_width: int | None = None,
+    timeout_seconds: float = 15.0,
 ) -> None:
     command = [
         ffmpeg_binary,
@@ -471,10 +525,15 @@ def _extract_frame(
             check=True,
             capture_output=True,
             text=True,
+            timeout=timeout_seconds,
         )
     except FileNotFoundError as exc:
         raise RuntimeError("ffmpeg is not installed or not available on PATH.") from exc
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
             f"ffmpeg failed to extract frame at {timestamp:.3f}s from {video_path}: {exc.stderr.strip()}"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"ffmpeg timed out after {timeout_seconds:.0f} seconds while extracting a frame from {video_path}."
         ) from exc

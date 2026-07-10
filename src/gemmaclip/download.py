@@ -12,6 +12,7 @@ from gemmaclip.io import Task, safe_task_id
 DEFAULT_VIDEO_DIR = Path(tempfile.gettempdir()) / "gemmaclip" / "videos"
 DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=30.0)
 DEFAULT_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+DEFAULT_MAX_DOWNLOAD_SECONDS = 30.0
 
 LOGGER = logging.getLogger("gemmaclip.download")
 
@@ -21,7 +22,10 @@ def download_video(
     destination_dir: Path = DEFAULT_VIDEO_DIR,
     timeout: httpx.Timeout = DEFAULT_TIMEOUT,
     chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE,
+    max_duration_seconds: float = DEFAULT_MAX_DOWNLOAD_SECONDS,
 ) -> Path:
+    if max_duration_seconds <= 0:
+        raise ValueError("max_duration_seconds must be positive.")
     destination_dir.mkdir(parents=True, exist_ok=True)
     output_path = destination_dir / f"{safe_task_id(task.task_id)}.mp4"
     temp_path = output_path.with_suffix(".part")
@@ -33,10 +37,14 @@ def download_video(
             response.raise_for_status()
             with temp_path.open("wb") as handle:
                 for chunk in response.iter_bytes(chunk_size=chunk_size):
+                    if time.monotonic() - started_at >= max_duration_seconds:
+                        raise RuntimeError(
+                            f"Video download for task {task.task_id} exceeded {max_duration_seconds:.0f} seconds."
+                        )
                     if chunk:
                         handle.write(chunk)
                         total_bytes += len(chunk)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, RuntimeError) as exc:
         temp_path.unlink(missing_ok=True)
         raise RuntimeError(f"Failed to download video for task {task.task_id}: {exc}") from exc
 

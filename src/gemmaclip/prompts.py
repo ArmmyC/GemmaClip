@@ -126,6 +126,71 @@ def build_direct_caption_repair_user_prompt(
     )
 
 
+def build_fireworks_judge_generation_system_prompt() -> str:
+    return (
+        "You are GemmaClip's video caption writer. Use only the six separate chronological frames provided. "
+        "Return only a JSON object with exactly the requested style keys. No markdown, code fences, analysis, or "
+        "reasoning. Each caption must be 18 to 35 words, describe the same visible event, and mention the main "
+        "visible subject and action. formal is objective, specific, factual, and not humorous. sarcastic is dry, "
+        "ironic, lightly mocking, and still factual. humorous_tech uses one natural common technology metaphor while "
+        "keeping the real subject and action clear. humorous_non_tech uses everyday humor without technical jargon. "
+        "Avoid generic filler. Do not invent dialogue, names, brands, exact locations, motives, future events, or "
+        "unseen actions."
+    )
+
+
+def build_fireworks_judge_generation_user_prompt(
+    task_id: str,
+    styles: Sequence[str],
+    frames: Sequence[ExtractedFrame],
+) -> str:
+    frame_lines = [
+        f"- Frame {index + 1}: timestamp_seconds={frame.timestamp_seconds:.3f}"
+        for index, frame in enumerate(frames)
+    ]
+    return (
+        f"Task ID: {task_id}\n"
+        f"Requested styles: {', '.join(styles)}\n"
+        "The following six image parts are separate chronological video frames, in the exact order listed.\n"
+        f"{chr(10).join(frame_lines)}\n"
+        "Return only the requested caption JSON object."
+    )
+
+
+def build_fireworks_judge_review_system_prompt() -> str:
+    return (
+        "You are GemmaClip's visual caption judge and minimal rewriter. Visually check every caption against all six "
+        "separate chronological frames. Return only JSON with scores and captions. For each requested style score "
+        "factual accuracy and requested style match from 0.0 to 1.0. Keep captions unchanged when both are strong. "
+        "Rewrite only captions that invent unsupported facts, omit the main subject or action, are generic, match the "
+        "wrong style, repeat another caption too closely, or use awkward forced technology jargon. Do not add new "
+        "facts. Do not include explanations, analysis, markdown, or code fences."
+    )
+
+
+def build_fireworks_judge_review_user_prompt(
+    task_id: str,
+    styles: Sequence[str],
+    frames: Sequence[ExtractedFrame],
+    captions: dict[str, str],
+) -> str:
+    frame_lines = [
+        f"- Frame {index + 1}: timestamp_seconds={frame.timestamp_seconds:.3f}"
+        for index, frame in enumerate(frames)
+    ]
+    return (
+        f"Task ID: {task_id}\n"
+        f"Requested styles: {', '.join(styles)}\n"
+        "The following six image parts are separate chronological video frames, in the exact order listed.\n"
+        f"{chr(10).join(frame_lines)}\n"
+        "Current captions JSON:\n"
+        f"{json.dumps(captions, indent=2)}\n"
+        "Return exactly this JSON shape:\n"
+        "{\"scores\": {\"<style>\": {\"accuracy\": 0.0, \"style_match\": 0.0}}, "
+        "\"captions\": {\"<style>\": \"caption\"}}"
+    )
+
+
 def build_caption_system_prompt() -> str:
     return (
         "You are GemmaClip's caption writer. Describe visible content faithfully. Do not invent details that are not "

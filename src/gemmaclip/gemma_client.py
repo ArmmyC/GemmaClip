@@ -6,7 +6,7 @@ import logging
 import os
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -17,7 +17,13 @@ import httpx
 DEFAULT_PROVIDER_FIREWORKS = "fireworks"
 DEFAULT_PROVIDER_GOOGLE = "google"
 DEFAULT_PROVIDER_OPENROUTER = "openrouter"
-VALID_PROVIDERS = {DEFAULT_PROVIDER_FIREWORKS, DEFAULT_PROVIDER_GOOGLE, DEFAULT_PROVIDER_OPENROUTER}
+DEFAULT_PROVIDER_FIREWORKS_JUDGE = "fireworks_judge"
+VALID_PROVIDERS = {
+    DEFAULT_PROVIDER_FIREWORKS,
+    DEFAULT_PROVIDER_GOOGLE,
+    DEFAULT_PROVIDER_OPENROUTER,
+    DEFAULT_PROVIDER_FIREWORKS_JUDGE,
+}
 DEFAULT_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
 DEFAULT_OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_GEMMA_MODEL = "accounts/fireworks/models/gemma-4-31b-it"
@@ -25,6 +31,8 @@ DEFAULT_GEMMA_VISION_MODEL = "accounts/fireworks/models/qwen3p7-plus"
 DEFAULT_GEMMA_TEXT_MODEL = "accounts/fireworks/models/deepseek-v4-pro"
 DEFAULT_FALLBACK_MODELS = ("accounts/fireworks/models/kimi-k2p6",)
 DEFAULT_GOOGLE_GEMMA_MODEL = "gemma-4-26b-a4b-it"
+DEFAULT_FIREWORKS_JUDGE_VISION_MODEL = "accounts/fireworks/models/minimax-m3"
+DEFAULT_FIREWORKS_JUDGE_FALLBACK_VISION_MODEL = "accounts/fireworks/models/qwen3p7-plus"
 DEFAULT_GEMMA_MAX_TOKENS = 2048
 DEFAULT_TOP_K = 40
 DEFAULT_GOOGLE_MAX_RETRIES = 2
@@ -99,6 +107,20 @@ class GemmaConfig:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class FireworksJudgeConfig:
+    api_key: str
+    base_url: str
+    vision_model: str
+    fallback_vision_model: str
+    max_tokens: int = DEFAULT_GEMMA_MAX_TOKENS
+    connect_timeout_seconds: float = 10.0
+    read_timeout_seconds: float = 45.0
+    write_timeout_seconds: float = 30.0
+    pool_timeout_seconds: float = 10.0
+    provider: str = DEFAULT_PROVIDER_FIREWORKS_JUDGE
+
+
 def load_gemma_config(env: Mapping[str, str] | None = None) -> GemmaConfig | None:
     values = env if env is not None else os.environ
     provider = _resolve_provider(values)
@@ -108,6 +130,9 @@ def load_gemma_config(env: Mapping[str, str] | None = None) -> GemmaConfig | Non
 
     if provider == DEFAULT_PROVIDER_OPENROUTER:
         return load_openrouter_provider_config(values)
+
+    if provider == DEFAULT_PROVIDER_FIREWORKS_JUDGE:
+        return load_fireworks_judge_provider_config(values)
 
     api_key = values.get("GEMMA_API_KEY", "").strip() or values.get("FIREWORKS_API_KEY", "").strip()
     base_url = values.get("GEMMA_BASE_URL", "").strip() or DEFAULT_FIREWORKS_BASE_URL
@@ -167,7 +192,33 @@ def load_openrouter_provider_config(env: Mapping[str, str] | None = None) -> Gem
     )
 
 
-def create_model_client(config: GemmaModelConfig) -> GemmaClient | GoogleGeminiClient | OpenRouterClient:
+def load_fireworks_judge_provider_config(
+    env: Mapping[str, str] | None = None,
+) -> FireworksJudgeConfig | None:
+    values = env if env is not None else os.environ
+    api_key = values.get("FIREWORKS_API_KEY", "").strip()
+    base_url = values.get("FIREWORKS_BASE_URL", "").strip() or DEFAULT_FIREWORKS_BASE_URL
+    vision_model = values.get("FIREWORKS_VISION_MODEL", "").strip() or DEFAULT_FIREWORKS_JUDGE_VISION_MODEL
+    fallback_vision_model = (
+        values.get("FIREWORKS_FALLBACK_VISION_MODEL", "").strip()
+        or DEFAULT_FIREWORKS_JUDGE_FALLBACK_VISION_MODEL
+    )
+    if not api_key or not base_url:
+        return None
+    return FireworksJudgeConfig(
+        api_key=api_key,
+        base_url=base_url,
+        vision_model=vision_model,
+        fallback_vision_model=fallback_vision_model,
+        max_tokens=_parse_max_tokens(values.get("GEMMA_MAX_TOKENS")),
+    )
+
+
+def create_model_client(
+    config: GemmaModelConfig | FireworksJudgeConfig,
+) -> GemmaClient | GoogleGeminiClient | OpenRouterClient | FireworksVisionClient:
+    if isinstance(config, FireworksJudgeConfig):
+        return FireworksVisionClient(config)
     if config.provider == DEFAULT_PROVIDER_GOOGLE:
         return GoogleGeminiClient(config)
     if config.provider == DEFAULT_PROVIDER_OPENROUTER:
@@ -275,6 +326,116 @@ class GemmaClient:
         if self._working_model and self._working_model in candidates:
             return (self._working_model, *(candidate for candidate in candidates if candidate != self._working_model))
         return tuple(candidates)
+
+
+class FireworksVisionClient:
+    """OpenAI-compatible multimodal client with explicit model fallback policy."""
+
+    def __init__(
+        self,
+        config: FireworksJudgeConfig,
+        client: httpx.Client | None = None,
+        *,
+        sleeper: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._config = config
+        self._client = client or httpx.Client(
+            timeout=httpx.Timeout(
+                connect=config.connect_timeout_seconds,
+                read=config.read_timeout_seconds,
+                write=config.write_timeout_seconds,
+                pool=config.pool_timeout_seconds,
+            )
+        )
+        self._sleeper = sleeper
+        self._clock = clock
+
+    def complete_json(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        temperature: float,
+        validator: Callable[[dict[str, Any]], Any],
+    ) -> Any:
+        failures: list[str] = []
+        model_attempts = (
+            (self._config.vision_model, 2),
+            (self._config.fallback_vision_model, 1),
+        )
+        for model_index, (model, attempts) in enumerate(model_attempts):
+            for attempt in range(1, attempts + 1):
+                try:
+                    response_text = self._request_text(messages, model=model, attempt=attempt, temperature=temperature)
+                    result = validator(parse_json_object(response_text))
+                    return result
+                except Exception as exc:
+                    retryable = _is_retryable_fireworks_error(exc)
+                    failures.append(f"{model}: {exc.__class__.__name__}")
+                    LOGGER.warning(
+                        "Fireworks vision request provider=%s model=%s attempt=%s failed retryable=%s error=%s",
+                        self._config.provider,
+                        model,
+                        attempt,
+                        retryable,
+                        exc.__class__.__name__,
+                    )
+                    if attempt < attempts and retryable:
+                        self._sleeper(0.5)
+                        continue
+                    break
+
+            if model_index == 0:
+                LOGGER.warning(
+                    "Fireworks vision primary model %s failed; switching to configured fallback model %s.",
+                    self._config.vision_model,
+                    self._config.fallback_vision_model,
+                )
+
+        raise RuntimeError(f"Fireworks vision request failed for configured models: {', '.join(failures)}")
+
+    def _request_text(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        model: str,
+        attempt: int,
+        temperature: float,
+    ) -> str:
+        url = f"{self._config.base_url.rstrip('/')}/chat/completions"
+        payload = {
+            "model": model,
+            "messages": list(messages),
+            "temperature": temperature,
+            "max_tokens": self._config.max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        started_at = self._clock()
+        status_code: int | str = "timeout"
+        try:
+            response = self._client.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {self._config.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            status_code = response.status_code
+            response.raise_for_status()
+            response_payload = response.json()
+            if not isinstance(response_payload, dict):
+                raise ValueError("Fireworks vision returned an unexpected response shape.")
+            return extract_message_text(response_payload)
+        finally:
+            LOGGER.info(
+                "Fireworks vision request provider=%s model=%s attempt=%s status_code=%s elapsed_seconds=%.3f",
+                self._config.provider,
+                model,
+                attempt,
+                status_code,
+                self._clock() - started_at,
+            )
 
 
 class GoogleGeminiClient:
@@ -913,6 +1074,15 @@ def _is_retryable_google_status(status_code: int) -> bool:
 
 def _is_retryable_openrouter_status(status_code: int) -> bool:
     return status_code in {429, 500, 502, 503, 504}
+
+
+def _is_retryable_fireworks_error(exc: Exception) -> bool:
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {429, 500, 502, 503, 504}
+    # The provider contract requires one retry for malformed JSON and invalid caption structure.
+    return isinstance(exc, ValueError)
 
 
 def _upload_google_image_path(google_client: Any, image_path: Path) -> Any:

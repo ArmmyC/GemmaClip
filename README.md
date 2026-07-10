@@ -2,6 +2,10 @@
 
 GemmaClip is a Track 2 AMD Developer Hackathon video captioning agent. It reads `/input/tasks.json`, downloads each video, probes metadata with `ffprobe`, extracts representative frames with `AKS-lite`, builds factual evidence, generates styled captions, optionally verifies them, and writes `/output/results.json`.
 
+## Runtime limit
+
+The container is bounded to 590 seconds, including startup, downloads, media processing, and model calls. The application writes valid fallback captions before it starts remote work, uses a 570-second soft batch budget, limits each download to 30 seconds, and limits each `ffprobe` or individual `ffmpeg` command to 15 seconds. If time runs low or a task operation fails, it preserves valid fallback captions for unfinished tasks rather than risking the 10-minute competition limit.
+
 Runtime model configuration:
 
 - Default provider selection:
@@ -21,6 +25,12 @@ Runtime model configuration:
   - Set `GEMMA_MODEL` to override both vision and text model selection, which is useful for local Gemma 4 deployment testing.
   - `GEMMA_VISION_MODEL` and `GEMMA_TEXT_MODEL` can override the default split model choices independently.
   - If a configured model is unavailable to the runtime key, GemmaClip tries fallback models from `GEMMA_FALLBACK_MODELS`, or `accounts/fireworks/models/kimi-k2p6` by default.
+- Fireworks judge provider:
+  - Set `GEMMACLIP_PROVIDER=fireworks_judge` to use six separate 512px frames, direct caption generation, and a visual judge/rewrite pass.
+  - Required: `FIREWORKS_API_KEY`.
+  - Optional: `FIREWORKS_BASE_URL`, `FIREWORKS_VISION_MODEL`, and `FIREWORKS_FALLBACK_VISION_MODEL`.
+  - Defaults: `accounts/fireworks/models/minimax-m3` followed by `accounts/fireworks/models/qwen3p7-plus`.
+  - Replace `FIREWORKS_VISION_MODEL` with a Gemma model identifier later without changing the pipeline.
 - `GEMMACLIP_DISABLE_VERIFIER=true` skips the optional verifier/refiner pass.
 - `GEMMACLIP_FORCE_PLACEHOLDER=true` and `GEMMACLIP_FORCE_FALLBACK=true` remain available for control runs.
 - No literal API keys are committed in the Dockerfile, README examples, source code, or tests.

@@ -4,6 +4,9 @@ ARG GEMINI_API_KEY=""
 ARG GEMINI_MODEL=""
 ARG GOOGLE_API_KEY=""
 ARG FIREWORKS_API_KEY=""
+ARG FIREWORKS_BASE_URL=""
+ARG FIREWORKS_VISION_MODEL=""
+ARG FIREWORKS_FALLBACK_VISION_MODEL=""
 ARG OPENROUTER_API_KEY=""
 ARG OPENROUTER_MODEL=""
 ARG GEMMACLIP_PROVIDER=""
@@ -14,6 +17,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 ENV GEMINI_API_KEY=${GEMINI_API_KEY} \
     GOOGLE_API_KEY=${GOOGLE_API_KEY} \
     FIREWORKS_API_KEY=${FIREWORKS_API_KEY} \
+    FIREWORKS_BASE_URL=${FIREWORKS_BASE_URL} \
+    FIREWORKS_VISION_MODEL=${FIREWORKS_VISION_MODEL} \
+    FIREWORKS_FALLBACK_VISION_MODEL=${FIREWORKS_FALLBACK_VISION_MODEL} \
     GEMINI_MODEL=${GEMINI_MODEL} \
     OPENROUTER_API_KEY=${OPENROUTER_API_KEY} \
     OPENROUTER_MODEL=${OPENROUTER_MODEL} \
@@ -24,7 +30,7 @@ ENV GEMMACLIP_DISABLE_VERIFIER=true
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates coreutils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md /app/
@@ -32,4 +38,4 @@ COPY src /app/src
 
 RUN pip install --no-cache-dir .
 
-ENTRYPOINT ["python", "-m", "gemmaclip.main"]
+ENTRYPOINT ["/bin/sh", "-c", "timeout --signal=TERM --kill-after=5s 590s python -m gemmaclip.main; status=$?; [ \"$status\" -eq 124 ] && exit 0; exit \"$status\""]
