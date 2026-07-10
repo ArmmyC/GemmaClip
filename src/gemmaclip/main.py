@@ -4,7 +4,7 @@ import argparse
 import logging
 import os
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +102,7 @@ def process_task(
     frame_strategy: str = DEFAULT_FRAME_STRATEGY,
     env: Mapping[str, str] | None = None,
     remaining_seconds: float | None = None,
+    remaining_time_fn: Callable[[], float] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
         values = env if env is not None else os.environ
@@ -147,6 +148,7 @@ def process_task(
             env=values,
             logger=LOGGER,
             remaining_seconds=remaining_seconds,
+            remaining_time_fn=remaining_time_fn,
         )
     except Exception as exc:
         LOGGER.warning("Task %s failed, writing fallback captions: %s", task.task_id, exc)
@@ -176,6 +178,7 @@ def process_tasks(
     env: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     active_start_time = now_fn() if start_time is None else start_time
+    runtime_deadline = active_start_time + max_runtime_seconds
     frame_manifest: list[dict[str, Any]] = []
     completed_results: dict[str, dict[str, Any]] = {}
 
@@ -208,6 +211,7 @@ def process_tasks(
             frame_strategy=frame_strategy,
             env=env,
             remaining_seconds=remaining_seconds,
+            remaining_time_fn=lambda: max(0.0, runtime_deadline - now_fn()),
         )
         completed_results[task.task_id] = result
         if manifest_entry is not None:

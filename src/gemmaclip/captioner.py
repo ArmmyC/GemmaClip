@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from io import BytesIO
 from pathlib import Path
@@ -52,7 +53,11 @@ MAX_CAPTION_ATTEMPTS = 3
 GOOGLE_CONTACT_SHEET_CELL_MAX_SIDE = 384
 GOOGLE_DESCRIPTION_FIRST_MIN_REMAINING_SECONDS = 120.0
 FIREWORKS_JUDGE_SKIP_REVIEW_REMAINING_SECONDS = 150.0
-FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS = 45.0
+FIREWORKS_JUDGE_REQUEST_BUDGET_SECONDS = 45.0
+FIREWORKS_JUDGE_FINAL_OUTPUT_BUFFER_SECONDS = 20.0
+FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS = (
+    FIREWORKS_JUDGE_REQUEST_BUDGET_SECONDS + FIREWORKS_JUDGE_FINAL_OUTPUT_BUFFER_SECONDS
+)
 BANNED_SPECULATION_PHRASES = (
     "likely",
     "probably",
@@ -126,6 +131,7 @@ def generate_captions(
     logger: logging.Logger | None = None,
     client_factory: Callable[[Any], Any] = create_model_client,
     remaining_seconds: float | None = None,
+    remaining_time_fn: Callable[[], float] | None = None,
 ) -> dict[str, str]:
     active_logger = logger or LOGGER
 
@@ -173,6 +179,7 @@ def generate_captions(
             remaining_seconds=remaining_seconds,
         )
     if config.provider == DEFAULT_PROVIDER_FIREWORKS_JUDGE:
+        fireworks_remaining_time_fn = _make_remaining_time_fn(remaining_seconds, remaining_time_fn)
         return _generate_fireworks_judge_captions(
             task,
             frames,
@@ -180,7 +187,7 @@ def generate_captions(
             logger=active_logger,
             client_factory=client_factory,
             model_config=config,
-            remaining_seconds=remaining_seconds,
+            remaining_time_fn=fireworks_remaining_time_fn,
         )
 
     try:
@@ -1094,9 +1101,10 @@ def _generate_fireworks_judge_captions(
     logger: logging.Logger,
     client_factory: Callable[[Any], Any],
     model_config: Any,
-    remaining_seconds: float | None,
+    remaining_time_fn: Callable[[], float],
 ) -> dict[str, str]:
-    if remaining_seconds is not None and remaining_seconds < FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS:
+    remaining_seconds = remaining_time_fn()
+    if remaining_seconds < FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS:
         logger.warning(
             "Task %s has only %.1fs remaining; skipping Fireworks judge generation for safe fallback output.",
             task.task_id,
@@ -1114,7 +1122,12 @@ def _generate_fireworks_judge_captions(
 
     client = client_factory(model_config)
     try:
-        captions = generate_fireworks_judge_direct_captions(task, selected_frames, client)
+        captions = generate_fireworks_judge_direct_captions(
+            task,
+            selected_frames,
+            client,
+            remaining_time_fn=remaining_time_fn,
+        )
     except Exception as exc:
         logger.warning("Task %s Fireworks judge generation failed; using fallback captions: %s", task.task_id, exc)
         return build_fallback_captions(task.styles)
@@ -1122,7 +1135,8 @@ def _generate_fireworks_judge_captions(
     if debug_dir is not None:
         write_captions_debug_file(task.task_id, captions, debug_dir, suffix="fireworks_raw")
 
-    if remaining_seconds is not None and remaining_seconds < FIREWORKS_JUDGE_SKIP_REVIEW_REMAINING_SECONDS:
+    remaining_seconds = remaining_time_fn()
+    if remaining_seconds < FIREWORKS_JUDGE_SKIP_REVIEW_REMAINING_SECONDS:
         logger.info(
             "Task %s skipping Fireworks judge review because remaining time is %.1fs.",
             task.task_id,
@@ -1131,7 +1145,13 @@ def _generate_fireworks_judge_captions(
         return captions
 
     try:
-        final_captions = generate_fireworks_judge_review_captions(task, selected_frames, captions, client)
+        final_captions = generate_fireworks_judge_review_captions(
+            task,
+            selected_frames,
+            captions,
+            client,
+            remaining_time_fn=remaining_time_fn,
+        )
     except Exception as exc:
         logger.warning("Task %s Fireworks judge review failed; preserving first captions: %s", task.task_id, exc)
         return captions
@@ -1145,12 +1165,16 @@ def generate_fireworks_judge_direct_captions(
     task: Task,
     frames: Sequence[ExtractedFrame],
     client: Any,
+    *,
+    remaining_time_fn: Callable[[], float],
 ) -> dict[str, str]:
     messages = build_fireworks_judge_generation_messages(task.task_id, task.styles, frames)
     return client.complete_json(
         messages,
         temperature=0.65,
         validator=lambda payload: _normalize_exact_caption_keys(payload, task.styles),
+        remaining_time_fn=remaining_time_fn,
+        minimum_remaining_seconds=FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS,
     )
 
 
@@ -1159,12 +1183,16 @@ def generate_fireworks_judge_review_captions(
     frames: Sequence[ExtractedFrame],
     captions: dict[str, str],
     client: Any,
+    *,
+    remaining_time_fn: Callable[[], float],
 ) -> dict[str, str]:
     messages = build_fireworks_judge_review_messages(task.task_id, task.styles, frames, captions)
     return client.complete_json(
         messages,
         temperature=0.25,
         validator=lambda payload: _validate_fireworks_judge_review(payload, task.styles),
+        remaining_time_fn=remaining_time_fn,
+        minimum_remaining_seconds=FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS,
     )
 
 
@@ -1192,6 +1220,19 @@ def _validate_fireworks_judge_review(payload: Mapping[str, Any], styles: Sequenc
     if not isinstance(captions, Mapping):
         raise ValueError("Fireworks judge review captions must be an object.")
     return _normalize_exact_caption_keys(dict(captions), styles)
+
+
+def _make_remaining_time_fn(
+    remaining_seconds: float | None,
+    remaining_time_fn: Callable[[], float] | None,
+) -> Callable[[], float]:
+    if remaining_time_fn is not None:
+        return remaining_time_fn
+    if remaining_seconds is None:
+        return lambda: float("inf")
+
+    started_at = time.monotonic()
+    return lambda: max(0.0, remaining_seconds - (time.monotonic() - started_at))
 
 
 def _generate_google_fast_captions(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from gemmaclip.captioner import build_fireworks_judge_generation_messages, generate_captions
 from gemmaclip.frames import ExtractedFrame
@@ -165,7 +166,7 @@ class ScriptedJudgeClient:
         self.responses = list(responses)
         self.messages: list[list[dict[str, object]]] = []
 
-    def complete_json(self, messages, *, temperature, validator):
+    def complete_json(self, messages, *, temperature, validator, **kwargs):
         self.messages.append(messages)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
@@ -246,3 +247,119 @@ def test_fireworks_judge_low_time_skips_review_and_client_logs_do_not_expose_sec
     assert len(scripted.messages) == 1
     assert secret not in caplog.text
     assert encoded_image not in caplog.text
+
+
+def test_fireworks_judge_recalculates_runtime_after_generation_and_skips_review(tmp_path):
+    first = initial_captions()
+    remaining = {"seconds": 151.0}
+
+    class GenerationConsumesBudget:
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, messages, *, temperature, validator, **kwargs):
+            self.calls += 1
+            remaining["seconds"] = 149.0
+            return validator(first)
+
+    client = GenerationConsumesBudget()
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: client,
+        remaining_time_fn=lambda: remaining["seconds"],
+    )
+
+    assert captions == first
+    assert client.calls == 1
+
+
+def test_fireworks_vision_skips_primary_retry_when_deadline_becomes_too_close():
+    remaining = {"seconds": 100.0}
+
+    class RetryWouldExceedBudget:
+        def __init__(self):
+            self.models: list[str] = []
+
+        def post(self, url, headers, json):
+            self.models.append(json["model"])
+            remaining["seconds"] = 64.0
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            return httpx.Response(429, request=request, json={"error": "busy"})
+
+    http_client = RetryWouldExceedBudget()
+    client = FireworksVisionClient(
+        FireworksJudgeConfig("secret", "https://example.test/v1", "primary-model", "fallback-model"),
+        client=http_client,
+        sleeper=lambda delay: None,
+    )
+
+    with pytest.raises(RuntimeError, match="Fireworks vision request failed"):
+        client.complete_json(
+            [{"role": "user", "content": "hello"}],
+            temperature=0.6,
+            validator=lambda payload: payload,
+            remaining_time_fn=lambda: remaining["seconds"],
+            minimum_remaining_seconds=65.0,
+        )
+
+    assert http_client.models == ["primary-model"]
+
+
+def test_fireworks_vision_skips_fallback_model_when_deadline_becomes_too_close():
+    remaining = {"seconds": 100.0}
+
+    class PrimaryFailureConsumesBudget:
+        def __init__(self):
+            self.models: list[str] = []
+
+        def post(self, url, headers, json):
+            self.models.append(json["model"])
+            remaining["seconds"] = 64.0
+            request = httpx.Request("POST", url, json=json, headers=headers)
+            return httpx.Response(400, request=request, json={"error": "bad request"})
+
+    http_client = PrimaryFailureConsumesBudget()
+    client = FireworksVisionClient(
+        FireworksJudgeConfig("secret", "https://example.test/v1", "primary-model", "fallback-model"),
+        client=http_client,
+        sleeper=lambda delay: None,
+    )
+
+    with pytest.raises(RuntimeError, match="Fireworks vision request failed"):
+        client.complete_json(
+            [{"role": "user", "content": "hello"}],
+            temperature=0.6,
+            validator=lambda payload: payload,
+            remaining_time_fn=lambda: remaining["seconds"],
+            minimum_remaining_seconds=65.0,
+        )
+
+    assert http_client.models == ["primary-model"]
+
+
+def test_fireworks_judge_preserves_valid_first_captions_when_review_budget_expires(tmp_path):
+    first = initial_captions()
+    remaining = {"seconds": 200.0}
+
+    class ReviewBudgetExpires:
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, messages, *, temperature, validator, **kwargs):
+            self.calls += 1
+            remaining["seconds"] = 64.0
+            return validator(first)
+
+    client = ReviewBudgetExpires()
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: client,
+        remaining_time_fn=lambda: remaining["seconds"],
+    )
+
+    assert captions == first
+    assert client.calls == 1

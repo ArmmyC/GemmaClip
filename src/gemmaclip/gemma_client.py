@@ -121,7 +121,9 @@ class FireworksJudgeConfig:
     provider: str = DEFAULT_PROVIDER_FIREWORKS_JUDGE
 
 
-def load_gemma_config(env: Mapping[str, str] | None = None) -> GemmaConfig | None:
+def load_gemma_config(
+    env: Mapping[str, str] | None = None,
+) -> GemmaConfig | FireworksJudgeConfig | None:
     values = env if env is not None else os.environ
     provider = _resolve_provider(values)
 
@@ -328,6 +330,10 @@ class GemmaClient:
         return tuple(candidates)
 
 
+class FireworksRuntimeBudgetError(RuntimeError):
+    """Raised before an API attempt when the batch deadline no longer permits it."""
+
+
 class FireworksVisionClient:
     """OpenAI-compatible multimodal client with explicit model fallback policy."""
 
@@ -357,6 +363,8 @@ class FireworksVisionClient:
         *,
         temperature: float,
         validator: Callable[[dict[str, Any]], Any],
+        remaining_time_fn: Callable[[], float] | None = None,
+        minimum_remaining_seconds: float = 0.0,
     ) -> Any:
         failures: list[str] = []
         model_attempts = (
@@ -366,6 +374,7 @@ class FireworksVisionClient:
         for model_index, (model, attempts) in enumerate(model_attempts):
             for attempt in range(1, attempts + 1):
                 try:
+                    self._ensure_attempt_budget(remaining_time_fn, minimum_remaining_seconds)
                     response_text = self._request_text(messages, model=model, attempt=attempt, temperature=temperature)
                     result = validator(parse_json_object(response_text))
                     return result
@@ -393,6 +402,19 @@ class FireworksVisionClient:
                 )
 
         raise RuntimeError(f"Fireworks vision request failed for configured models: {', '.join(failures)}")
+
+    @staticmethod
+    def _ensure_attempt_budget(
+        remaining_time_fn: Callable[[], float] | None,
+        minimum_remaining_seconds: float,
+    ) -> None:
+        if remaining_time_fn is None:
+            return
+        remaining_seconds = max(0.0, remaining_time_fn())
+        if remaining_seconds < minimum_remaining_seconds:
+            raise FireworksRuntimeBudgetError(
+                f"Only {remaining_seconds:.1f}s remain; need {minimum_remaining_seconds:.1f}s before a Fireworks request."
+            )
 
     def _request_text(
         self,
