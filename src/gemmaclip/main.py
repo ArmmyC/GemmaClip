@@ -129,6 +129,7 @@ def process_task(
             google_fast=use_google_fast_frames,
             fireworks_judge=use_fireworks_judge_frames,
             command_timeout_seconds=DEFAULT_MEDIA_COMMAND_TIMEOUT_SECONDS,
+            env=values,
         )
         manifest_entry = make_frame_manifest_entry(task.task_id, video_path, extracted_frames, metadata)
         if debug_dir is not None:
