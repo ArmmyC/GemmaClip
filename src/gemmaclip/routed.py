@@ -83,6 +83,7 @@ def generate_routed_captions(
     remaining_time_fn: Callable[[], float],
     debug_dir: str | Path | None = None,
     logger: logging.Logger | None = None,
+    stage_callback: Callable[[str], None] | None = None,
 ) -> dict[str, str]:
     from gemmaclip.captioner import build_evidence_based_captions, build_fallback_captions, cleanup_caption
 
@@ -104,12 +105,14 @@ def generate_routed_captions(
         )
         return build_fallback_captions(task.styles)
     if remaining < TWO_CALL_VISUAL_MIN_SECONDS:
+        _notify_stage(stage_callback, "writing_captions")
         return _single_visual_caption_call(
             task, selected_frames, config, client_factory, remaining_time_fn,
             active_logger, temperature=stage_settings.single_call_temperature,
         )
 
     settings = load_audio_settings(env)
+    _notify_stage(stage_callback, "checking_audio")
     remaining_before_audio = remaining_time_fn()
     if settings.mode != "off" and remaining_before_audio >= settings.min_remaining_seconds:
         audio = prepare_audio_candidate(video_path, Path(video_path).parent.parent / "audio" / safe_task_id(task.task_id), settings=settings)
@@ -130,6 +133,7 @@ def generate_routed_captions(
         return build_fallback_captions(task.styles)
     if remaining_after_audio < TWO_CALL_VISUAL_MIN_SECONDS:
         cleanup_audio_candidate(audio)
+        _notify_stage(stage_callback, "writing_captions")
         return _single_visual_caption_call(
             task, selected_frames, config, client_factory, remaining_time_fn,
             active_logger, temperature=stage_settings.single_call_temperature,
@@ -138,6 +142,7 @@ def generate_routed_captions(
     _log_route(active_logger, task.task_id, decision, audio, remaining_after_audio, settings.min_remaining_seconds)
 
     try:
+        _notify_stage(stage_callback, "building_evidence")
         evidence_messages_by_provider = lambda provider: build_evidence_messages(
             task.task_id, selected_frames, audio, decision, google=provider == DEFAULT_PROVIDER_GOOGLE,
         )
@@ -173,6 +178,7 @@ def generate_routed_captions(
         return build_evidence_based_captions(task.styles, evidence)
 
     try:
+        _notify_stage(stage_callback, "writing_captions")
         caption_text = _call_role_with_fallback(
             task.task_id, "caption", config, client_factory,
             lambda provider: build_final_caption_messages(task, selected_frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
@@ -541,3 +547,8 @@ def _log_invalid_output(logger, task_id, operation, remaining_seconds, minimum_r
 
 def _log_route(logger, task_id, decision, audio, remaining_seconds, minimum_remaining_seconds):
     logger.info("task_id=%s operation=routing route=%s provider=routed_gemma model=role_configured attempt=0 status=success elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=%.3f fallback_used=false audio_available=%s audio_selected=%s audio_window_seconds=%.3f", task_id, decision.route, remaining_seconds, minimum_remaining_seconds, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds)
+
+
+def _notify_stage(callback: Callable[[str], None] | None, stage: str) -> None:
+    if callback is not None:
+        callback(stage)

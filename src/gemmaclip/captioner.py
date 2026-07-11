@@ -152,6 +152,7 @@ def generate_captions(
     remaining_seconds: float | None = None,
     remaining_time_fn: Callable[[], float] | None = None,
     video_path: str | Path | None = None,
+    stage_callback: Callable[[str], None] | None = None,
 ) -> dict[str, str]:
     active_logger = logger or LOGGER
 
@@ -218,7 +219,7 @@ def generate_captions(
             task, frames, video_path, config=config, env=values,
             client_factory=client_factory,
             remaining_time_fn=_make_remaining_time_fn(remaining_seconds, remaining_time_fn),
-            debug_dir=debug_dir, logger=active_logger,
+            debug_dir=debug_dir, logger=active_logger, stage_callback=stage_callback,
         )
 
     try:

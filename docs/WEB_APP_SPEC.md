@@ -1,5 +1,7 @@
 # GemmaClip Web App Specification
 
+> Implementation status (July 2026): `web/` and the optional FastAPI backend implement the real Quick Caption vertical slice and inspection of the completed stored run throughout Gemma Lab. Interactive stage reruns, persisted audio playback, and experiment creation/comparison remain intentionally deferred and disabled; no mock results are substituted. See `docs/WEB_DEVELOPMENT.md`.
+
 ## 1. Product vision
 
 GemmaClip should be both:

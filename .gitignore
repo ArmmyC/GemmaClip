@@ -29,3 +29,12 @@ frames/
 *.mp4
 *.jpg
 *.jpeg
+
+.gemmaclip/
+web/node_modules/
+web/dist/
+web/coverage/
+web/.tanstack/
+web/*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts

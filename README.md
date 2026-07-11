@@ -1,5 +1,9 @@
 # GemmaClip
 
+GemmaClip has two independent surfaces: the Track 2 leaderboard CLI and an optional FastAPI + React web demo. The web demo provides a real Quick Caption workflow through the same routed Gemma pipeline and opens its stored results in Gemma Lab.
+
+See [docs/WEB_DEVELOPMENT.md](docs/WEB_DEVELOPMENT.md) for installation, environment variables, run storage, validation, and intentionally deferred Lab controls.
+
 GemmaClip is a Track 2 AMD Developer Hackathon video captioning agent. It reads `/input/tasks.json`, downloads each video, probes metadata with `ffprobe`, extracts representative frames with `AKS-lite`, builds factual evidence, generates styled captions, optionally verifies them, and writes `/output/results.json`.
 
 ## Runtime limit
