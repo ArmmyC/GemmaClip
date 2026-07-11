@@ -84,8 +84,8 @@ function VideoStage() {
                   htmlFor={`preset-${p.id}`}
                   className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition ${
                     preset === p.id
-                      ? "border-ink bg-accent"
-                      : "border-border bg-background hover:border-ink/40"
+                      ? "border-ember bg-ember-soft"
+                      : "border-white/10 bg-background hover:border-white/20"
                   }`}
                 >
                   <RadioGroupItem id={`preset-${p.id}`} value={p.id} className="mt-0.5" />
@@ -134,10 +134,11 @@ export function StageHeader({
 }) {
   return (
     <header className="mb-8 max-w-3xl">
-      <div className="font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
+      <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
+        <span className="h-px w-6 bg-ember" aria-hidden="true" />
         {eyebrow}
       </div>
-      <h1 className="mt-2 font-display text-4xl leading-tight tracking-tight text-balance md:text-5xl">
+      <h1 className="mt-3 font-display text-4xl font-semibold leading-[1.02] tracking-[-0.045em] text-balance md:text-5xl">
         {title}
       </h1>
       {description && (

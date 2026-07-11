@@ -38,47 +38,52 @@
   --color-lab: var(--lab);
   --color-lab-soft: var(--lab-soft);
   --color-rule: var(--rule);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
 
-  --font-display: "Instrument Serif", ui-serif, Georgia, serif;
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-display: "Inter", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
 }
 
 :root {
   --radius: 0.5rem;
 
-  /* Warm paper / ink palette */
-  --paper: oklch(0.972 0.012 85);
-  --ink: oklch(0.185 0.014 60);
-  --rule: oklch(0.885 0.014 80);
+  /* Signal Glass: near-black precision surfaces with one ember action accent. */
+  --paper: #f4f6f8;
+  --ink: #080a0e;
+  --rule: rgb(255 255 255 / 0.085);
 
-  --background: var(--paper);
-  --foreground: var(--ink);
-  --card: oklch(0.988 0.008 85);
-  --card-foreground: var(--ink);
-  --popover: oklch(0.988 0.008 85);
-  --popover-foreground: var(--ink);
+  --background: #07090d;
+  --foreground: #f4f6f8;
+  --card: #0c1017;
+  --card-foreground: #f4f6f8;
+  --popover: #10151e;
+  --popover-foreground: #f4f6f8;
 
-  --primary: var(--ink);
-  --primary-foreground: var(--paper);
-  --secondary: oklch(0.935 0.014 80);
-  --secondary-foreground: var(--ink);
-  --muted: oklch(0.935 0.014 80);
-  --muted-foreground: oklch(0.48 0.018 70);
-  --accent: oklch(0.925 0.018 80);
-  --accent-foreground: var(--ink);
-  --destructive: oklch(0.55 0.2 27);
-  --destructive-foreground: var(--paper);
+  --primary: #f4f6f8;
+  --primary-foreground: #080a0e;
+  --secondary: #131923;
+  --secondary-foreground: #e9edf2;
+  --muted: #111720;
+  --muted-foreground: #8994a5;
+  --accent: #171e29;
+  --accent-foreground: #f4f6f8;
+  --destructive: #ff6f78;
+  --destructive-foreground: #080a0e;
 
-  --border: var(--rule);
-  --input: var(--rule);
-  --ring: oklch(0.65 0.16 45);
+  --border: rgb(255 255 255 / 0.085);
+  --input: rgb(255 255 255 / 0.11);
+  --ring: #ff6b3d;
 
-  /* Accents */
-  --ember: oklch(0.66 0.17 42);         /* burnt amber */
-  --ember-soft: oklch(0.94 0.05 60);
-  --lab: oklch(0.5 0.14 210);           /* deep lab blue */
-  --lab-soft: oklch(0.94 0.03 220);
+  --ember: #ff6b3d;
+  --ember-soft: rgb(255 107 61 / 0.12);
+  --lab: #72a7ff;
+  --lab-soft: rgb(114 167 255 / 0.11);
+  --success: #54d39a;
+  --warning: #f1b65a;
+  --danger: #ff6f78;
 
   --chart-1: var(--ember);
   --chart-2: var(--lab);
@@ -86,8 +91,8 @@
   --chart-4: oklch(0.7 0.15 85);
   --chart-5: oklch(0.45 0.15 300);
 
-  --sidebar: var(--paper);
-  --sidebar-foreground: var(--ink);
+  --sidebar: var(--card);
+  --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--ink);
   --sidebar-primary-foreground: var(--paper);
   --sidebar-accent: var(--accent);
@@ -98,18 +103,40 @@
 
 @utility grid-paper {
   background-image:
-    linear-gradient(to right, color-mix(in oklab, var(--ink) 4%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in oklab, var(--ink) 4%, transparent) 1px, transparent 1px);
-  background-size: 32px 32px;
+    linear-gradient(to right, rgb(255 255 255 / 0.025) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.025) 1px, transparent 1px);
+  background-size: 48px 48px;
 }
 
 @utility dot-paper {
-  background-image: radial-gradient(color-mix(in oklab, var(--ink) 12%, transparent) 1px, transparent 1px);
+  background-image: radial-gradient(rgb(255 255 255 / 0.08) 1px, transparent 1px);
   background-size: 18px 18px;
 }
 
 @utility ember-glow {
-  background: radial-gradient(ellipse at top, color-mix(in oklab, var(--ember) 20%, transparent), transparent 60%);
+  background: radial-gradient(circle at 50% 0%, rgb(255 107 61 / 0.11), transparent 38%), radial-gradient(circle at 86% 28%, rgb(80 130 255 / 0.06), transparent 30%);
+}
+
+@utility signal-grid {
+  background-image:
+    linear-gradient(rgb(255 255 255 / 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.025) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+@utility signal-glow {
+  background: radial-gradient(circle at 50% 0%, rgb(255 107 61 / 0.11), transparent 38%), radial-gradient(circle at 86% 28%, rgb(80 130 255 / 0.06), transparent 30%);
+}
+
+@utility glass-panel {
+  background: rgb(13 18 26 / 0.82);
+  border: 1px solid rgb(255 255 255 / 0.08);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.025), 0 20px 60px rgb(0 0 0 / 0.22);
+  backdrop-filter: blur(18px);
+}
+
+@utility stage-active {
+  box-shadow: inset 2px 0 0 var(--ember), inset 0 1px 0 rgb(255 255 255 / 0.025);
 }
 
 @utility text-balance {
@@ -126,9 +153,29 @@
     font-family: var(--font-sans);
     font-feature-settings: "ss01", "cv11";
     -webkit-font-smoothing: antialiased;
+    min-width: 320px;
+    min-height: 100%;
   }
+  button, a, input, select, textarea, [role="button"] { outline-offset: 3px; }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
   ::selection {
-    background-color: color-mix(in oklab, var(--ember) 35%, transparent);
-    color: var(--ink);
+    background-color: rgb(255 107 61 / 0.35);
+    color: var(--foreground);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass-panel {
+    background: var(--card);
+    backdrop-filter: none;
   }
 }

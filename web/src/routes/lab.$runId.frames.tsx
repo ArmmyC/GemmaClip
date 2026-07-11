@@ -23,7 +23,7 @@ export const Route = createFileRoute("/lab/$runId/frames")({
 
 const METHODS: { id: FrameMethod; label: string; note: string }[] = [
   { id: "uniform", label: "Uniform", note: "Fixed spacing across the clip." },
-  { id: "aks-lite", label: "AKS-Lite", note: "Adaptive Keyframe Sampling — visual-change driven." },
+  { id: "aks-lite", label: "AKS-Lite", note: "Adaptive Keyframe Sampling, driven by visual change." },
   { id: "hybrid", label: "Hybrid: Anchors + AKS-Lite", note: "Guaranteed anchors + top change frames." },
 ];
 
@@ -89,8 +89,8 @@ function FramesStage() {
                 htmlFor={`m-${m.id}`}
                 className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition ${
                   method === m.id
-                    ? "border-ink bg-accent"
-                    : "border-border bg-background hover:border-ink/40"
+                    ? "border-ember bg-ember-soft"
+                    : "border-white/10 bg-background hover:border-white/20"
                 }`}
               >
                 <RadioGroupItem id={`m-${m.id}`} value={m.id} className="mt-0.5" />

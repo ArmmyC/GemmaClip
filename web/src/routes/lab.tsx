@@ -25,21 +25,22 @@ function LabEntry() {
   }
 
   return (
-    <div className="min-h-[100dvh] bg-ink text-paper">
+    <div className="min-h-[100dvh] bg-background text-foreground signal-glow">
       <AppHeader variant="lab" />
       <main className="relative mx-auto grid max-w-7xl gap-12 overflow-hidden px-6 py-16 md:grid-cols-[0.9fr_1.1fr] md:items-center md:py-24">
         <div className="pointer-events-none absolute inset-0 grid-paper opacity-[0.08]" />
         <section className="relative">
           <ScanSearch className="h-9 w-9 text-ember" aria-hidden="true" />
-          <h1 className="mt-7 max-w-xl font-display text-6xl leading-[0.95] tracking-tight md:text-8xl">Enter the glass-box pipeline.</h1>
-          <p className="mt-6 max-w-lg text-lg leading-relaxed text-paper/70">Open a video as a live Gemma Lab run. Inspect its frames, audio decision, evidence route, and grounded captions.</p>
+          <h1 className="mt-7 max-w-xl font-display text-5xl font-semibold leading-[0.96] tracking-[-0.055em] md:text-7xl">Open the glass-box pipeline.</h1>
+          <p className="mt-6 max-w-lg text-lg leading-relaxed text-muted-foreground">Inspect frame selection, audio routing, structured evidence, and every generated caption from one stored run.</p>
+          <div className="mt-8 flex flex-wrap gap-x-5 gap-y-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground"><span>Frames</span><span>Audio</span><span>Evidence</span><span>Captions</span></div>
         </section>
-        <section className="relative rounded-2xl border border-paper/15 bg-paper/[0.05] p-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-md md:p-8" aria-label="Create Gemma Lab run">
+        <section className="glass-panel relative rounded-2xl p-2 md:p-3" aria-label="Create Gemma Lab run">
           <UploadDropzone onFile={setFile} />
-          <Button className="mt-5 gap-2 rounded-full bg-paper px-6 text-ink hover:bg-paper/90" size="lg" onClick={openLab} disabled={busy}>
-            {busy ? "Opening Lab..." : "Open in Gemma Lab"} <ArrowRight className="h-4 w-4" />
+          <Button className="mt-4 min-h-11 gap-2 rounded-lg px-6" size="lg" onClick={openLab} disabled={busy || !file}>
+            {busy ? "Opening Lab" : "Open in Gemma Lab"} <ArrowRight className="h-4 w-4" />
           </Button>
-          {error && <p role="alert" className="mt-4 text-sm text-red-300">{error}</p>}
+          {error && <p role="alert" className="mt-4 text-sm text-danger">{error}</p>}
         </section>
       </main>
     </div>

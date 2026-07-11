@@ -140,8 +140,8 @@ function CaptionsStage() {
                   className={cn(
                     "rounded-full border px-3 py-1 text-xs transition",
                     styles.includes(s.id)
-                      ? "border-ink bg-ink text-paper"
-                      : "border-border bg-background text-muted-foreground hover:border-ink/40",
+                      ? "border-foreground bg-foreground text-background"
+                      : "border-white/10 bg-background text-muted-foreground hover:border-white/20",
                   )}
                 >
                   {s.label}

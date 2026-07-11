@@ -9,8 +9,9 @@ describe("GenerationOutcomeNotice", () => {
     expect(screen.getByText(/structured evidence/i)).toBeInTheDocument();
   });
 
-  it("does not warn for model-generated output", () => {
-    const { container } = render(<GenerationOutcomeNotice outcome="model_generated" />);
-    expect(container).toBeEmptyDOMElement();
+  it("quietly confirms model-generated output", () => {
+    render(<GenerationOutcomeNotice outcome="model_generated" />);
+    expect(screen.getByText("Model-generated captions")).toBeInTheDocument();
+    expect(screen.getByText("Grounded output is ready.")).toBeInTheDocument();
   });
 });

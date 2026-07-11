@@ -13,7 +13,7 @@ export function AudioWaveform({ segment, durationSec, className }: Props) {
   const endPct = (segment.endSec / durationSec) * 100;
 
   return (
-    <div className={cn("rounded-xl border border-border bg-card p-4", className)}>
+    <div className={cn("glass-panel rounded-xl p-4", className)}>
       <div className="mb-3 flex items-center justify-between font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
         <span>waveform · {durationSec.toFixed(1)}s</span>
         <span>rms {segment.rms.toFixed(3)}</span>
@@ -31,7 +31,7 @@ export function AudioWaveform({ segment, durationSec, className }: Props) {
                 key={i}
                 className={cn(
                   "flex-1 rounded-sm",
-                  inside ? "bg-ember" : "bg-ink/25",
+                  inside ? "bg-ember" : "bg-muted-foreground/30",
                 )}
                 style={{ height: `${Math.max(6, v * 100)}%` }}
               />

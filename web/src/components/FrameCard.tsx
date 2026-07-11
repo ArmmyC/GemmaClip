@@ -22,9 +22,9 @@ export function FrameCard({ frame, onToggle, className }: Props) {
   const [included, setIncluded] = useState(frame.included);
   const reasonBadge =
     frame.reason === "anchor" ? (
-      <Badge className="border-ember/40 bg-ember-soft text-ink">anchor</Badge>
+      <Badge className="border-ember/40 bg-ember-soft text-ember">anchor</Badge>
     ) : frame.reason === "high-change" ? (
-      <Badge className="border-lab/30 bg-lab-soft text-ink">high change</Badge>
+      <Badge className="border-lab/30 bg-lab-soft text-lab">high change</Badge>
     ) : (
       <Badge variant="secondary">uniform</Badge>
     );
@@ -32,13 +32,14 @@ export function FrameCard({ frame, onToggle, className }: Props) {
   return (
     <div
       className={cn(
-        "group overflow-hidden rounded-xl border border-border bg-card transition",
-        !included && "opacity-50",
+        "group overflow-hidden rounded-xl border border-white/10 bg-card transition-colors hover:border-white/20",
+        included && "ring-1 ring-transparent hover:ring-ember/60",
+        !included && "opacity-50 grayscale",
         className,
       )}
     >
       <div className="relative aspect-video overflow-hidden bg-muted">
-        <img src={frame.thumbnailUrl} alt={`frame ${frame.index}`} className="h-full w-full object-cover" />
+        <img src={frame.thumbnailUrl} alt={`Frame ${frame.index} at ${fmtTs(frame.timestampSec)}, selected as ${frame.reason}`} className="h-full w-full object-cover" />
         <Dialog>
           <DialogTrigger asChild>
             <button
@@ -52,13 +53,13 @@ export function FrameCard({ frame, onToggle, className }: Props) {
             <DialogTitle className="font-mono text-xs uppercase tracking-[0.18em] text-muted-foreground">
               Frame {frame.index} · {fmtTs(frame.timestampSec)}
             </DialogTitle>
-            <img src={frame.thumbnailUrl} alt="frame preview" className="w-full rounded-md" />
+            <img src={frame.thumbnailUrl} alt={`Frame ${frame.index} preview at ${fmtTs(frame.timestampSec)}`} className="w-full rounded-md" />
           </DialogContent>
         </Dialog>
       </div>
-      <div className="space-y-2 p-3">
+      <div className="space-y-2 border-t border-white/10 p-4">
         <div className="flex items-center justify-between font-mono text-[11px] text-muted-foreground">
-          <span>#{String(frame.index).padStart(2, "0")}</span>
+          <span>FRAME {String(frame.index).padStart(2, "0")}</span>
           <span>{fmtTs(frame.timestampSec)}</span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">

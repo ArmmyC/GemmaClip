@@ -26,7 +26,7 @@ function CompareStage() {
   const [active, setActive] = useState<(typeof PRESETS)[number]["id"]>("methods");
   if (!run || run.stages.captions !== "complete") return <ProcessingState />;
 
-  if (run.experiments.length < 2) return <div><StageHeader eyebrow="stage 06 · compare" title="Compare experiments" description="Real experiment creation and comparison are coming in the next integration phase. No mock results are shown."/><div className="rounded-xl border border-dashed border-border bg-card p-8 text-center text-muted-foreground">This Quick Caption run has no stored experiments yet.</div><PrevNext runId={runId} prev={{ to: "/lab/$runId/captions", label: "Captions" }}/></div>;
+  if (run.experiments.length < 2) return <div><StageHeader eyebrow="stage 06 / compare" title="Compare experiments" description="Saved experiment comparison will become available after interactive stage reruns are enabled."/><div className="glass-panel rounded-xl border-dashed p-10 text-center"><div className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">No experiments stored</div><div className="mt-3 text-lg font-semibold">Comparison is ready for a future run.</div><p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">The current demo preserves this boundary and does not invent charts or comparison results.</p></div><PrevNext runId={runId} prev={{ to: "/lab/$runId/captions", label: "Captions" }}/></div>;
 
   const [a, b] = run.experiments;
 

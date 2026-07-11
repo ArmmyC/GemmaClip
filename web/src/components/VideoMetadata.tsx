@@ -27,7 +27,7 @@ export function VideoMetadataPanel({ meta, className }: Props) {
     ["Audio stream", meta.hasAudioStream ? "present" : "not detected"],
   ] as const;
   return (
-    <dl className={cn("divide-y divide-border rounded-xl border border-border bg-card", className)}>
+    <dl className={cn("glass-panel divide-y divide-white/10 rounded-xl", className)}>
       {rows.map(([k, v]) => (
         <div key={k} className="flex items-center justify-between px-4 py-2.5">
           <dt className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">

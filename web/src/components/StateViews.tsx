@@ -4,8 +4,8 @@ import { CircleDashed, AlertTriangle } from "lucide-react";
 
 export function ProcessingState({ description = "GemmaClip is still preparing this stage. It will update automatically." }: { description?: ReactNode }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-8" role="status" aria-live="polite">
-      <div className="h-1 overflow-hidden rounded-full bg-muted">
+    <div className="glass-panel rounded-xl p-8" role="status" aria-live="polite">
+      <div className="h-px overflow-hidden bg-white/10">
         <div className="h-full w-2/5 animate-pulse rounded-full bg-ember motion-reduce:animate-none" />
       </div>
       <div className="mt-5 font-display text-xl">Processing this stage</div>
@@ -28,7 +28,7 @@ export function EmptyState({
   return (
     <div
       className={cn(
-        "flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card/40 p-10 text-center",
+        "flex flex-col items-center justify-center rounded-xl border border-dashed border-white/15 bg-card/50 p-10 text-center",
         className,
       )}
     >
@@ -56,7 +56,7 @@ export function ErrorState({
   return (
     <div
       className={cn(
-        "flex flex-col items-center justify-center rounded-xl border border-destructive/30 bg-destructive/5 p-10 text-center",
+        "flex flex-col items-center justify-center rounded-xl border border-danger/35 bg-danger/5 p-10 text-center",
         className,
       )}
     >

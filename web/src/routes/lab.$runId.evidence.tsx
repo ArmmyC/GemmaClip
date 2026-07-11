@@ -95,8 +95,8 @@ function EvidenceStage() {
                 htmlFor={`r-${r.id}`}
                 className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition ${
                   route === r.id
-                    ? "border-ink bg-accent"
-                    : "border-border bg-background hover:border-ink/40"
+                    ? "border-ember bg-ember-soft"
+                    : "border-white/10 bg-background hover:border-white/20"
                 }`}
               >
                 <RadioGroupItem id={`r-${r.id}`} value={r.id} className="mt-0.5" />
@@ -139,6 +139,7 @@ function EvidenceStage() {
 
         <div className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
+            <div className="md:col-span-2 flex items-center gap-3 border-b border-white/10 pb-2 pt-2 font-mono text-[10px] uppercase tracking-[0.2em] text-success"><span className="h-px w-5 bg-success" /> Verified observations</div>
             <EvidenceCard label="scene">{ev.scene}</EvidenceCard>
             <EvidenceCard label="setting">{ev.setting}</EvidenceCard>
             <EvidenceCard label="subjects">
@@ -155,9 +156,10 @@ function EvidenceStage() {
             <EvidenceCard label="temporal progression">
               <EvidenceList items={ev.temporalProgression} />
             </EvidenceCard>
-            <EvidenceCard label="verified description" className="md:col-span-2">
+            <EvidenceCard label="verified description" className="border-ember/30 bg-ember-soft/5 md:col-span-2">
               {ev.verifiedDescription}
             </EvidenceCard>
+            <div className="md:col-span-2 flex items-center gap-3 border-b border-white/10 pb-2 pt-6 font-mono text-[10px] uppercase tracking-[0.2em] text-warning"><span className="h-px w-5 bg-warning" /> Do not claim</div>
             <EvidenceCard label="possible misreads" tone="warn">
               <EvidenceList items={ev.possibleMisreads} />
             </EvidenceCard>
@@ -171,9 +173,9 @@ function EvidenceStage() {
               <div className="space-y-1 font-mono text-xs">
                 <div>status: {ev.audio.status}</div>
                 <div>speech: {ev.audio.speechPresent ? "present" : "not detected"}</div>
-                <div>language: {ev.audio.language ?? "—"}</div>
+                <div>language: {ev.audio.language ?? "none recorded"}</div>
                 <div>consistency: {ev.audio.visualConsistency}</div>
-                <div>transcript: {ev.audio.transcript ?? "—"}</div>
+                <div>transcript: {ev.audio.transcript ?? "none recorded"}</div>
               </div>
             </EvidenceCard>
             <EvidenceCard label="caption-safe audio facts" tone="info" className="md:col-span-2">

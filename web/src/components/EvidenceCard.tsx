@@ -12,9 +12,9 @@ export function EvidenceCard({ label, children, className, tone = "default" }: P
   return (
     <div
       className={cn(
-        "rounded-lg border border-border bg-card p-4",
-        tone === "warn" && "border-ember/40 bg-ember-soft/50",
-        tone === "info" && "border-lab/30 bg-lab-soft/50",
+        "rounded-lg border border-white/10 bg-card/80 p-4",
+        tone === "warn" && "border-warning/35 bg-warning/5",
+        tone === "info" && "border-lab/25 bg-lab-soft/5",
         className,
       )}
     >
@@ -27,12 +27,12 @@ export function EvidenceCard({ label, children, className, tone = "default" }: P
 }
 
 export function EvidenceList({ items }: { items: string[] }) {
-  if (!items.length) return <span className="text-muted-foreground">—</span>;
+  if (!items.length) return <span className="text-muted-foreground">None recorded</span>;
   return (
     <ul className="space-y-1">
       {items.map((it, i) => (
         <li key={i} className="flex gap-2">
-          <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-ink/50" />
+          <span className="mt-2 h-px w-3 shrink-0 bg-ember/70" />
           <span>{it}</span>
         </li>
       ))}

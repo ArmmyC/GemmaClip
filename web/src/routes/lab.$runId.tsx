@@ -14,10 +14,11 @@ function LabLayout() {
   const { data: run, isLoading, error } = useRun(runId);
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-[100dvh] bg-background">
       <AppHeader labRunId={runId} />
-      {run && <PipelineStepper runId={runId} states={run.stages} />}
-      <main className="mx-auto max-w-7xl px-6 py-8">
+      <div className="mx-auto grid max-w-[1440px] lg:grid-cols-[240px_minmax(0,1fr)]">
+      {run && <PipelineStepper runId={runId} states={run.stages} status={run.status} generationOutcome={run.generationOutcome} />}
+      <main className="min-w-0 px-6 py-8 lg:px-10 lg:py-10">
         {isLoading && (
           <div className="animate-pulse font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
             loading run…
@@ -33,6 +34,7 @@ function LabLayout() {
           <Outlet />
         </LabRunContent>
       </main>
+      </div>
     </div>
   );
 }

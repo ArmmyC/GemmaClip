@@ -14,60 +14,44 @@ export function UploadDropzone({ onFile, compact, className }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   function handleFiles(files: FileList | null) {
-    if (!files || !files[0]) return;
+    if (!files?.[0]) return;
     setSelected(files[0]);
     onFile?.(files[0]);
   }
 
   return (
     <label
-      onDragOver={(e) => {
-        e.preventDefault();
-        setHover(true);
-      }}
+      onDragOver={(event) => { event.preventDefault(); setHover(true); }}
       onDragLeave={() => setHover(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setHover(false);
-        handleFiles(e.dataTransfer.files);
-      }}
+      onDrop={(event) => { event.preventDefault(); setHover(false); handleFiles(event.dataTransfer.files); }}
       className={cn(
-        "group relative block cursor-pointer overflow-hidden rounded-xl border-2 border-dashed border-border bg-card/60 p-8 text-center transition",
-        "hover:border-ink/50 hover:bg-card",
-        hover && "border-ember bg-ember-soft/40",
-        compact ? "py-8" : "py-16",
+        "group relative block cursor-pointer overflow-hidden rounded-xl border border-white/10 bg-card/80 text-center transition-[border-color,background-color] duration-200",
+        "hover:border-white/20 hover:bg-card",
+        hover && "border-ember bg-ember-soft/20",
+        compact ? "p-6" : "p-8 sm:p-12",
         className,
       )}
     >
-      <input
-        ref={inputRef}
-        type="file"
-        accept="video/mp4,video/webm,video/quicktime"
-        className="sr-only"
-        onChange={(e) => handleFiles(e.target.files)}
-      />
-      <div className="pointer-events-none absolute inset-0 dot-paper opacity-40" />
+      <input ref={inputRef} type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" onChange={(event) => handleFiles(event.target.files)} />
+      <div className="pointer-events-none absolute inset-0 signal-grid opacity-70" />
       <div className="relative flex flex-col items-center gap-4">
-        <div className="flex h-14 w-14 items-center justify-center rounded-full border border-border bg-background">
-          {selected ? (
-            <Film className="h-6 w-6 text-ember" />
-          ) : (
-            <UploadCloud className="h-6 w-6 text-ink/70 transition group-hover:text-ember" />
-          )}
+        <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-white/10 bg-background text-ember">
+          {selected ? <Film className="h-5 w-5" /> : <UploadCloud className="h-5 w-5 transition group-hover:-translate-y-0.5" />}
         </div>
         {selected ? (
           <div>
-            <div className="font-mono text-sm">{selected.name}</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              {(selected.size / 1_000_000).toFixed(1)} MB · ready to process
+            <div className="font-mono text-sm text-foreground">{selected.name}</div>
+            <div className="mt-2 flex items-center justify-center font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              <span>{(selected.size / 1_000_000).toFixed(1)} MB</span>
+              <span className="mx-2 text-muted-foreground/50">/</span>
+              <span>{selected.type || "video file"}</span>
             </div>
+            <div className="mt-3 inline-flex min-h-11 items-center rounded-md border border-ember/40 bg-ember-soft/20 px-3 font-mono text-[10px] uppercase tracking-[0.16em] text-ember">Ready / choose another</div>
           </div>
         ) : (
           <div>
-            <div className="font-display text-2xl">Upload or drop your video</div>
-            <div className="mt-1 font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
-              MP4 · WEBM · MOV
-            </div>
+            <div className="font-display text-2xl font-semibold tracking-tight">Drop video to begin</div>
+            <div className="mt-2 font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">MP4 / WEBM / MOV</div>
           </div>
         )}
       </div>

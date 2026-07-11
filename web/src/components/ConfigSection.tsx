@@ -21,9 +21,9 @@ export function ConfigSection({
   return (
     <section
       className={cn(
-        "rounded-xl border border-border bg-card p-5",
-        tone === "lab" && "bg-lab-soft/40",
-        tone === "ember" && "bg-ember-soft/40",
+        "glass-panel rounded-xl p-5",
+        tone === "lab" && "border-lab/25 bg-lab-soft/5",
+        tone === "ember" && "border-ember/25 bg-ember-soft/5",
         className,
       )}
     >

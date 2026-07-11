@@ -14,9 +14,9 @@ describe("RouteDecision", () => {
         audio={{ status: "unavailable", speechPresent: false, language: null, transcript: null, visualConsistency: "unknown", captionSafeFacts: [] }}
       />,
     );
-    expect(screen.getByText("Gemma 4 · 31B")).toBeInTheDocument();
+    expect(screen.getByText("Gemma 4 31B")).toBeInTheDocument();
     expect(screen.getByText("google")).toBeInTheDocument();
-    expect(screen.getByText("audio dropped safely")).toBeInTheDocument();
+    expect(screen.getByText("audio dropped")).toBeInTheDocument();
     expect(screen.getByText("actual modality: visual")).toBeInTheDocument();
   });
 });

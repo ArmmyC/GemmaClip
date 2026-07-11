@@ -11,7 +11,7 @@ interface Props {
 export function FrameTimeline({ series, frames, durationSec, className }: Props) {
   const max = Math.max(...series.map((s) => s.score));
   return (
-    <div className={cn("rounded-xl border border-border bg-card p-4", className)}>
+    <div className={cn("glass-panel rounded-xl p-4", className)}>
       <div className="mb-3 flex items-center justify-between">
         <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
           visual change · {durationSec.toFixed(1)}s
@@ -36,7 +36,7 @@ export function FrameTimeline({ series, frames, durationSec, className }: Props)
               <stop offset="1" stopColor="currentColor" stopOpacity="0" />
             </linearGradient>
           </defs>
-          <g className="text-ink">
+          <g className="text-foreground">
             <path
               d={
                 "M0,100 " +

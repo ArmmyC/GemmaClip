@@ -13,5 +13,6 @@ describe("CaptionCard grounding context", () => {
     expect(screen.getByText("visual evidence")).toBeInTheDocument();
     expect(screen.queryByText(/evidence used/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/caption-safe audio evidence/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /regenerate/i })).not.toBeInTheDocument();
   });
 });

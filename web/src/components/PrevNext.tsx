@@ -10,10 +10,10 @@ interface Props {
 
 export function PrevNext({ runId, prev, next }: Props) {
   return (
-    <div className="mt-8 flex items-center justify-between gap-3 border-t border-border pt-6">
+    <div className="mt-10 flex items-center justify-between gap-3 border-t border-white/10 pt-6">
       <div>
         {prev && (
-          <Button asChild variant="ghost" size="sm">
+          <Button asChild variant="ghost" size="sm" className="min-h-11">
             <Link to={prev.to} params={{ runId }} className="gap-2">
               <ArrowLeft className="h-4 w-4" /> {prev.label}
             </Link>
@@ -22,7 +22,7 @@ export function PrevNext({ runId, prev, next }: Props) {
       </div>
       <div>
         {next && (
-          <Button asChild size="sm" className="gap-2">
+          <Button asChild size="sm" className="min-h-11 gap-2">
             <Link to={next.to} params={{ runId }}>
               {next.label} <ArrowRight className="h-4 w-4" />
             </Link>

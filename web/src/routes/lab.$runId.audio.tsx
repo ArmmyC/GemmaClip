@@ -88,8 +88,8 @@ function AudioStage() {
                 htmlFor={`am-${m.id}`}
                 className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition ${
                   mode === m.id
-                    ? "border-ink bg-accent"
-                    : "border-border bg-background hover:border-ink/40"
+                    ? "border-ember bg-ember-soft"
+                    : "border-white/10 bg-background hover:border-white/20"
                 }`}
               >
                 <RadioGroupItem id={`am-${m.id}`} value={m.id} className="mt-0.5" />
@@ -195,7 +195,7 @@ function StatusCard({
   return (
     <div className={`rounded-xl border p-4 ${tone === "ok" ? "border-border bg-card" : "border-ember/30 bg-ember-soft/40"}`}>
       <div className="flex items-center gap-2">
-        <Icon className={`h-4 w-4 ${tone === "ok" ? "text-ink/70" : "text-ember"}`} />
+        <Icon className={`h-4 w-4 ${tone === "ok" ? "text-success" : "text-warning"}`} />
         <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
           {label}
         </span>

@@ -13,10 +13,11 @@ export function RawJsonViewer({ data, className, defaultOpen = false }: Props) {
   const [open, setOpen] = useState(defaultOpen);
   const text = JSON.stringify(data, null, 2);
   return (
-    <div className={cn("overflow-hidden rounded-xl border border-border bg-card", className)}>
+    <div className={cn("glass-panel overflow-hidden rounded-xl", className)}>
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-between px-4 py-3 text-left"
+        type="button"
+        className="flex min-h-12 w-full items-center justify-between px-4 py-3 text-left hover:bg-white/[0.03]"
       >
         <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
           raw · structured evidence
@@ -26,7 +27,7 @@ export function RawJsonViewer({ data, className, defaultOpen = false }: Props) {
         />
       </button>
       {open && (
-        <div className="relative border-t border-border bg-background">
+        <div className="relative border-t border-white/10 bg-background">
           <Button
             variant="ghost"
             size="sm"
