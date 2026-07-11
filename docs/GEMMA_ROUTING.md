@@ -10,17 +10,19 @@ The normal visual route is Gemma 4 26B A4B evidence followed by Gemma 4 31B fina
 
 The live deadline is checked before every Fireworks and Google attempt. If a primary attempt consumes the safe budget, its same-role fallback is not started. Audio preprocessing is skipped before `ffprobe` when fewer than the configured audio-route seconds remain, and the complete degradation ladder is applied again afterward. If preprocessing leaves fewer than 130 seconds, the two-stage evidence path is abandoned in favor of direct visual captioning. If evidence succeeds but fewer than 70 seconds remain, final synthesis is replaced by evidence-based captions. Focused repair also requires 70 seconds; when unsafe, valid model captions are preserved and only missing styles are filled from evidence-based fallbacks.
 
-## Same-role provider fallback
+## Provider fallback
 
-Each model role tries Fireworks first and then Google when configured:
+Every attempt includes the provider request, text extraction, JSON extraction, and evidence or caption validation. Empty, malformed, or invalid output continues to the next safe attempt:
 
 | Role | Fireworks | Google fallback |
 | --- | --- | --- |
 | Visual evidence | `FIREWORKS_GEMMA_VISUAL_MODEL` | `GOOGLE_GEMMA_VISUAL_MODEL` |
-| Audio-visual evidence | `FIREWORKS_GEMMA_AUDIO_VISUAL_MODEL` | `GOOGLE_GEMMA_AUDIO_VISUAL_MODEL` |
+| Audio-visual evidence | `FIREWORKS_GEMMA_AUDIO_VISUAL_MODEL` with frames and audio | `GOOGLE_GEMMA_VISUAL_MODEL` with frames only |
 | Final captions | `FIREWORKS_GEMMA_CAPTION_MODEL` | `GOOGLE_GEMMA_CAPTION_MODEL` |
 
-Configured values are opaque callable model or deployment IDs. A Fireworks library path is not assumed to be callable. If only one provider has credentials, it is used directly. If evidence fails everywhere, the task receives deterministic validated fallback captions. If caption synthesis fails after evidence succeeds, the evidence-based fallback preserves the grounded subject, action, and setting.
+The Google visual and caption defaults are both `gemma-4-31b-it`. Fireworks audio-visual inference is optional. If it is unavailable, unconfigured, times out, or produces invalid evidence, GemmaClip deletes the temporary audio candidate and continues through Google Gemma 4 31B using six visual frames. Google 31B never receives audio in this fallback policy. `GOOGLE_GEMMA_AUDIO_VISUAL_MODEL` is reserved for explicit future experimentation and is not the production fallback for Fireworks Unified.
+
+Configured values are opaque callable model or deployment IDs. If no Fireworks key exists, Google visual 31B is used directly. If evidence fails everywhere, the task receives deterministic validated fallback captions. If caption synthesis fails after evidence succeeds, the evidence-based fallback preserves the grounded subject, action, and setting.
 
 ## Runtime degradation
 
@@ -59,3 +61,8 @@ GEMMACLIP_ROUTED_SINGLE_CALL_TEMPERATURE=0.4
 Temperatures accept finite values in the provider-supported 0–2 range; configured values are clamped and malformed values use the defaults. These defaults are safeguards, not measured optima.
 
 Do not place real credentials in commands committed to the repository.
+
+```text
+GOOGLE_GEMMA_VISUAL_MODEL=gemma-4-31b-it
+GOOGLE_GEMMA_CAPTION_MODEL=gemma-4-31b-it
+```

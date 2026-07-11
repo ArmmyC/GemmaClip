@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from gemmaclip.frames import ExtractedFrame
+from gemmaclip.routed import EvidenceExecution
 from gemmaclip.web.adapters import adapt_captions, adapt_evidence, adapt_frames, backend_style_to_frontend, frontend_style_to_backend, selected_route_from_evidence
 
 
@@ -36,6 +37,17 @@ def test_unavailable_audio_reports_visual_route():
     route, reason = selected_route_from_evidence({"audio": {"available": False, "status": "unavailable"}})
     assert route == "gemma-4-26b-a4b"
     assert "26B A4B" in reason
+
+
+def test_execution_provenance_overrides_audio_inference():
+    execution = EvidenceExecution("google", "gemma-4-31b-it", "visual", True, False, True, "Fireworks unavailable; frames only.")
+    route, reason = selected_route_from_evidence({"audio": {"available": False}}, execution)
+    adapted = adapt_evidence({"audio": {"available": False}}, selected_route=route, route_reason=reason, execution=execution)
+    assert route == "gemma-4-31b"
+    assert adapted["routeProvider"] == "google"
+    assert adapted["routeModel"] == "Gemma 4 31B"
+    assert adapted["routeModality"] == "visual"
+    assert adapted["audioFallbackOccurred"] is True
 
 
 def test_grounding_availability_never_claims_per_caption_use():

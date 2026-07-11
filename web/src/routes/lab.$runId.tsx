@@ -14,7 +14,7 @@ function LabLayout() {
 
   return (
     <div className="min-h-screen bg-background">
-      <AppHeader />
+      <AppHeader labRunId={runId} />
       {run && <PipelineStepper runId={runId} states={run.stages} />}
       <main className="mx-auto max-w-7xl px-6 py-8">
         {isLoading && (

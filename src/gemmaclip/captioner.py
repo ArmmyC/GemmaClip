@@ -157,6 +157,7 @@ def generate_captions(
     video_path: str | Path | None = None,
     stage_callback: Callable[[str], None] | None = None,
     outcome_callback: Callable[[GenerationOutcome], None] | None = None,
+    evidence_execution_callback: Callable[[Any], None] | None = None,
 ) -> dict[str, str]:
     active_logger = logger or LOGGER
 
@@ -230,6 +231,7 @@ def generate_captions(
             remaining_time_fn=_make_remaining_time_fn(remaining_seconds, remaining_time_fn),
             debug_dir=debug_dir, logger=active_logger, stage_callback=stage_callback,
             outcome_callback=outcome_callback,
+            evidence_execution_callback=evidence_execution_callback,
         )
 
     try:

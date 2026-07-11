@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from gemmaclip.frames import ExtractedFrame
+from gemmaclip.routed import EvidenceExecution
 from gemmaclip.video import VideoMetadata
 from gemmaclip.web.services import PipelineDependencies, WebPipelineError, WebServices
 from gemmaclip.web.storage import RunStorage
@@ -29,6 +30,7 @@ def test_complete_quick_caption_job_persists_real_adapted_run(tmp_path):
         (Path(kwargs["debug_dir"]) / f"{task.task_id}_routed_evidence.json").write_text(json.dumps(evidence))
         kwargs["stage_callback"]("building_evidence"); kwargs["stage_callback"]("writing_captions")
         kwargs["outcome_callback"]("model_generated")
+        kwargs["evidence_execution_callback"](EvidenceExecution("google", "gemma-4-31b-it", "visual", True, False, True, "Audio fallback used frames only."))
         return captions
 
     deps = PipelineDependencies(probe_fn=lambda path: VideoMetadata(12.0, 30.0, 1280, 720, 360, "h264"), audio_probe_fn=lambda path: False, frame_extract_fn=extract, caption_generate_fn=generate)
@@ -40,6 +42,10 @@ def test_complete_quick_caption_job_persists_real_adapted_run(tmp_path):
     assert result["evidence"]["result"]["subjects"] == ["person"]
     assert result["generationOutcome"] == "model_generated"
     assert result["degraded"] is False
+    assert result["evidence"]["result"]["selectedRoute"] == "gemma-4-31b"
+    assert result["evidence"]["result"]["routeProvider"] == "google"
+    assert result["evidence"]["result"]["routeModality"] == "visual"
+    assert result["evidence"]["result"]["audioFallbackOccurred"] is True
     assert storage.read_artifact_json(run["id"], "results/captions.json") == captions
 
 

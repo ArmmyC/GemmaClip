@@ -17,6 +17,7 @@ from gemmaclip.gemma_client import (
 from gemmaclip.io import Task
 from gemmaclip.captioner import build_fallback_captions
 from gemmaclip.routed import (
+    EvidenceExecution,
     EVIDENCE_ATTEMPT_MIN_SECONDS,
     FINAL_SYNTHESIS_MIN_SECONDS,
     FOCUSED_REPAIR_MIN_SECONDS,
@@ -78,6 +79,8 @@ def test_default_routed_models_are_gemma_for_every_role():
     models = [item.model.lower() for role in ("visual", "audio_visual", "caption") for item in config.role_configs(role)]
     assert models
     assert all("gemma" in model for model in models)
+    assert config.google_visual_model == "gemma-4-31b-it"
+    assert config.google_caption_model == "gemma-4-31b-it"
 
 
 def test_deterministic_audio_routing_modes_and_runtime():
@@ -317,7 +320,7 @@ def test_post_audio_budget_between_65_and_130_degrades_to_single_visual_call(tmp
         remaining_time_fn=lambda: clock["remaining"],
     )
     assert calls == [config.google_visual_model]
-    assert config.google_caption_model not in calls
+    assert len(calls) == 1
     assert set(captions) == {"formal"}
     assert not audio_path.exists()
 
@@ -328,7 +331,7 @@ def test_caption_stage_minimums_exceed_default_sixty_second_request_timeout():
     assert SINGLE_CALL_ATTEMPT_MIN_SECONDS == 70.0
 
 
-def test_selected_audio_route_uses_unified_and_cleans_selected_file(tmp_path, monkeypatch):
+def test_selected_audio_without_fireworks_uses_google_visual_and_cleans_selected_file(tmp_path, monkeypatch):
     task = Task("v1", "https://example.com/v.mp4", ("formal",))
     config = load_gemma_config({"GEMMACLIP_PROVIDER": "routed_gemma", "GOOGLE_API_KEY": "google"})
     audio_path = tmp_path / "selected.wav"
@@ -336,7 +339,7 @@ def test_selected_audio_route_uses_unified_and_cleans_selected_file(tmp_path, mo
     monkeypatch.setattr("gemmaclip.routed.prepare_audio_candidate", lambda *args, **kwargs: _audio(path=audio_path))
     calls = []
     responses = [
-        '{"main_subjects":["a person"],"actions":["walking through a room"],"setting":"a room","audio":{"status":"usable","visual_consistency":"consistent","allowed_caption_facts":["A person speaks briefly."]}}',
+        '{"main_subjects":["a person"],"actions":["walking through a room"],"setting":"a room","audio":{"status":"usable","transcript":"do not keep","allowed_caption_facts":["A person speaks briefly."]}}',
         '{"formal":"A person walks through a room and speaks briefly while nearby furnishings remain visible throughout the short indoor scene."}',
     ]
     class Client:
@@ -349,8 +352,91 @@ def test_selected_audio_route_uses_unified_and_cleans_selected_file(tmp_path, mo
         env={"GEMMACLIP_AUDIO_MODE": "auto"}, client_factory=Client,
         remaining_time_fn=lambda: 500.0,
     )
-    assert calls == [config.google_audio_visual_model, config.google_caption_model]
+    assert calls == [config.google_visual_model, config.google_caption_model]
+    assert config.google_audio_visual_model not in calls
     assert not audio_path.exists()
+
+
+def test_fireworks_audio_failure_falls_back_to_google_visual_without_audio(tmp_path, monkeypatch):
+    task = Task("v1", "https://example.com/v.mp4", ("formal",))
+    config = load_gemma_config({"GEMMACLIP_PROVIDER": "routed_gemma", "FIREWORKS_API_KEY": "fw", "GOOGLE_API_KEY": "google"})
+    audio_path = tmp_path / "selected.wav"
+    audio_path.write_bytes(b"wav")
+    monkeypatch.setattr("gemmaclip.routed.prepare_audio_candidate", lambda *args, **kwargs: _audio(path=audio_path))
+    monkeypatch.setattr("gemmaclip.captioner.make_jpeg_data_url", lambda path: "data:image/jpeg;base64,anBlZw==")
+    calls = []
+    executions: list[EvidenceExecution] = []
+    class Client:
+        def __init__(self, model_config): self.model_config = model_config
+        def chat_completion_text(self, messages, temperature, **kwargs):
+            parts = messages[1]["content"]
+            calls.append((self.model_config.provider, self.model_config.model, [part["type"] for part in parts]))
+            if self.model_config.provider == DEFAULT_PROVIDER_FIREWORKS and self.model_config.model == config.fireworks_audio_visual_model:
+                raise RuntimeError("deployment unavailable")
+            if self.model_config.provider == DEFAULT_PROVIDER_GOOGLE and messages[0]["content"].startswith("Return JSON"):
+                return '{"main_subjects":["a person"],"actions":["walking"],"audio":{"status":"usable","transcript":"must disappear","allowed_caption_facts":["speech"]}}'
+            return '{"formal":"A person walks through the visible indoor space while six sampled frames keep the grounded scene clear, concise, and straightforward."}'
+    outcomes = []
+    captions = generate_routed_captions(
+        task, _frames(tmp_path), tmp_path / "video.mp4", config=config,
+        env={"GEMMACLIP_AUDIO_MODE": "auto"}, client_factory=Client,
+        remaining_time_fn=lambda: 500.0, outcome_callback=outcomes.append,
+        evidence_execution_callback=executions.append,
+    )
+    assert set(captions) == {"formal"}
+    assert calls[0][1] == config.fireworks_audio_visual_model and "input_audio" in calls[0][2]
+    assert calls[1][1] == config.google_visual_model and "input_audio" not in calls[1][2] and "audio_file" not in calls[1][2]
+    assert executions == [EvidenceExecution(DEFAULT_PROVIDER_GOOGLE, config.google_visual_model, "visual", True, False, True, "The Fireworks audio-visual model was unavailable, so GemmaClip continued with Google Gemma 4 31B using frames only.")]
+    assert outcomes == [GENERATION_OUTCOME_MODEL]
+    assert not audio_path.exists()
+
+
+def test_fireworks_unified_success_uses_audio_and_skips_google(tmp_path, monkeypatch):
+    task = Task("v1", "https://example.com/v.mp4", ("formal",))
+    config = load_gemma_config({"GEMMACLIP_PROVIDER": "routed_gemma", "FIREWORKS_API_KEY": "fw", "GOOGLE_API_KEY": "google"})
+    audio_path = tmp_path / "selected.wav"
+    audio_path.write_bytes(b"wav")
+    monkeypatch.setattr("gemmaclip.routed.prepare_audio_candidate", lambda *args, **kwargs: _audio(path=audio_path))
+    monkeypatch.setattr("gemmaclip.captioner.make_jpeg_data_url", lambda path: "data:image/jpeg;base64,anBlZw==")
+    calls = []
+    executions = []
+    class Client:
+        def __init__(self, model_config): self.model_config = model_config
+        def chat_completion_text(self, messages, temperature, **kwargs):
+            calls.append((self.model_config.provider, self.model_config.model, [part["type"] for part in messages[1]["content"]]))
+            if self.model_config.model == config.fireworks_audio_visual_model:
+                return '{"main_subjects":["a person"],"actions":["walking"],"audio":{"status":"usable","visual_consistency":"consistent","allowed_caption_facts":["brief speech"]}}'
+            return '{"formal":"A person walks through the visible indoor space while speaking briefly, grounded by the selected audio and six chronological frames."}'
+    generate_routed_captions(task, _frames(tmp_path), tmp_path / "video.mp4", config=config, env={"GEMMACLIP_AUDIO_MODE": "auto"}, client_factory=Client, remaining_time_fn=lambda: 500.0, evidence_execution_callback=executions.append)
+    assert calls[0][0:2] == (DEFAULT_PROVIDER_FIREWORKS, config.fireworks_audio_visual_model)
+    assert "input_audio" in calls[0][2]
+    assert not any(provider == DEFAULT_PROVIDER_GOOGLE for provider, _, _ in calls)
+    assert executions[0].audio_used is True and executions[0].fallback_used is False
+    assert not audio_path.exists()
+
+
+def test_malformed_fireworks_evidence_and_caption_json_fall_through_to_google(tmp_path, monkeypatch):
+    task = Task("v1", "https://example.com/v.mp4", ("formal",))
+    config = load_gemma_config({"GEMMACLIP_PROVIDER": "routed_gemma", "FIREWORKS_API_KEY": "fw", "GOOGLE_API_KEY": "google"})
+    calls = []
+    monkeypatch.setattr("gemmaclip.captioner.make_jpeg_data_url", lambda path: "data:image/jpeg;base64,anBlZw==")
+    class Client:
+        def __init__(self, model_config): self.model_config = model_config
+        def chat_completion_text(self, messages, temperature, **kwargs):
+            calls.append((self.model_config.provider, self.model_config.model))
+            if self.model_config.provider == DEFAULT_PROVIDER_FIREWORKS:
+                return "not valid json"
+            if self.model_config.provider == DEFAULT_PROVIDER_GOOGLE and messages[0]["content"].startswith("Return JSON"):
+                return '{"main_subjects":["a person"],"actions":["walking"]}'
+            return '{"formal":"A person walks through the visible scene while six chronological frames provide enough grounded detail for this concise and accurate caption."}'
+    captions = generate_routed_captions(task, _frames(tmp_path), tmp_path / "video.mp4", config=config, env={"GEMMACLIP_AUDIO_MODE": "off"}, client_factory=Client, remaining_time_fn=lambda: 500.0)
+    assert set(captions) == {"formal"}
+    assert calls == [
+        (DEFAULT_PROVIDER_FIREWORKS, config.fireworks_visual_model),
+        (DEFAULT_PROVIDER_GOOGLE, config.google_visual_model),
+        (DEFAULT_PROVIDER_FIREWORKS, config.fireworks_caption_model),
+        (DEFAULT_PROVIDER_GOOGLE, config.google_caption_model),
+    ]
 
 
 @pytest.mark.parametrize(

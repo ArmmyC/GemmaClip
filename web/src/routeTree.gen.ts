@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as QuickRouteImport } from './routes/quick'
+import { Route as LabRouteImport } from './routes/lab'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as LabRunIdRouteImport } from './routes/lab.$runId'
 import { Route as LabRunIdIndexRouteImport } from './routes/lab.$runId.index'
@@ -25,15 +26,20 @@ const QuickRoute = QuickRouteImport.update({
   path: '/quick',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LabRoute = LabRouteImport.update({
+  id: '/lab',
+  path: '/lab',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LabRunIdRoute = LabRunIdRouteImport.update({
-  id: '/lab/$runId',
-  path: '/lab/$runId',
-  getParentRoute: () => rootRouteImport,
+  id: '/$runId',
+  path: '/$runId',
+  getParentRoute: () => LabRoute,
 } as any)
 const LabRunIdIndexRoute = LabRunIdIndexRouteImport.update({
   id: '/',
@@ -73,6 +79,7 @@ const LabRunIdAudioRoute = LabRunIdAudioRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/lab': typeof LabRouteWithChildren
   '/quick': typeof QuickRoute
   '/lab/$runId': typeof LabRunIdRouteWithChildren
   '/lab/$runId/audio': typeof LabRunIdAudioRoute
@@ -85,6 +92,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/lab': typeof LabRouteWithChildren
   '/quick': typeof QuickRoute
   '/lab/$runId/audio': typeof LabRunIdAudioRoute
   '/lab/$runId/captions': typeof LabRunIdCaptionsRoute
@@ -97,6 +105,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/lab': typeof LabRouteWithChildren
   '/quick': typeof QuickRoute
   '/lab/$runId': typeof LabRunIdRouteWithChildren
   '/lab/$runId/audio': typeof LabRunIdAudioRoute
@@ -111,6 +120,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/lab'
     | '/quick'
     | '/lab/$runId'
     | '/lab/$runId/audio'
@@ -123,6 +133,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/lab'
     | '/quick'
     | '/lab/$runId/audio'
     | '/lab/$runId/captions'
@@ -134,6 +145,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/lab'
     | '/quick'
     | '/lab/$runId'
     | '/lab/$runId/audio'
@@ -147,8 +159,8 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  LabRoute: typeof LabRouteWithChildren
   QuickRoute: typeof QuickRoute
-  LabRunIdRoute: typeof LabRunIdRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -160,6 +172,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof QuickRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/lab': {
+      id: '/lab'
+      path: '/lab'
+      fullPath: '/lab'
+      preLoaderRoute: typeof LabRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -169,10 +188,10 @@ declare module '@tanstack/react-router' {
     }
     '/lab/$runId': {
       id: '/lab/$runId'
-      path: '/lab/$runId'
+      path: '/$runId'
       fullPath: '/lab/$runId'
       preLoaderRoute: typeof LabRunIdRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof LabRoute
     }
     '/lab/$runId/': {
       id: '/lab/$runId/'
@@ -250,10 +269,20 @@ const LabRunIdRouteWithChildren = LabRunIdRoute._addFileChildren(
   LabRunIdRouteChildren,
 )
 
+interface LabRouteChildren {
+  LabRunIdRoute: typeof LabRunIdRouteWithChildren
+}
+
+const LabRouteChildren: LabRouteChildren = {
+  LabRunIdRoute: LabRunIdRouteWithChildren,
+}
+
+const LabRouteWithChildren = LabRoute._addFileChildren(LabRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  LabRoute: LabRouteWithChildren,
   QuickRoute: QuickRoute,
-  LabRunIdRoute: LabRunIdRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

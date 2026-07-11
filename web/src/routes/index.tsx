@@ -137,8 +137,8 @@ function Landing() {
                 variant="secondary"
                 className="gap-2 rounded-full bg-paper text-ink hover:bg-paper/90"
               >
-                <Link to="/quick">
-                  Start a run to open Gemma Lab <ArrowRight className="h-4 w-4" />
+                <Link to="/lab">
+                  Open Gemma Lab <ArrowRight className="h-4 w-4" />
                 </Link>
               </Button>
             </div>

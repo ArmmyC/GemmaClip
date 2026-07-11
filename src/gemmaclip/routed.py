@@ -65,6 +65,17 @@ class RouteDecision:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceExecution:
+    provider: str
+    model: str
+    modality: Literal["visual", "audio_visual"]
+    audio_attempted: bool
+    audio_used: bool
+    fallback_used: bool
+    fallback_reason: str | None
+
+
 def decide_evidence_route(settings: AudioSettings, audio: AudioEvidenceCandidate, remaining_seconds: float) -> RouteDecision:
     if settings.mode == "off":
         return RouteDecision("visual", False, "audio mode is off")
@@ -89,6 +100,7 @@ def generate_routed_captions(
     logger: logging.Logger | None = None,
     stage_callback: Callable[[str], None] | None = None,
     outcome_callback: Callable[[GenerationOutcome], None] | None = None,
+    evidence_execution_callback: Callable[[EvidenceExecution], None] | None = None,
 ) -> dict[str, str]:
     from gemmaclip.captioner import build_evidence_based_captions, build_fallback_captions, cleanup_caption
 
@@ -148,21 +160,13 @@ def generate_routed_captions(
 
     try:
         _notify_stage(stage_callback, "building_evidence")
-        evidence_messages_by_provider = lambda provider: build_evidence_messages(
-            task.task_id, selected_frames, audio, decision, google=provider == DEFAULT_PROVIDER_GOOGLE,
-        )
-        evidence_text = _call_role_with_fallback(
-            task.task_id, decision.route, config, client_factory, evidence_messages_by_provider,
+        evidence, execution = _generate_validated_evidence(
+            task.task_id, selected_frames, audio, decision, config, client_factory,
             temperature=stage_settings.evidence_temperature,
             logger=active_logger,
             remaining_time_fn=remaining_time_fn,
-            minimum_remaining_seconds=EVIDENCE_ATTEMPT_MIN_SECONDS,
-            operation="evidence",
-            route=decision.route,
-            audio=audio,
-            audio_selected=decision.use_audio,
         )
-        evidence = normalize_routed_evidence(_extract_object(evidence_text), audio, decision)
+        _notify_evidence_execution(evidence_execution_callback, execution)
         if debug_dir is not None:
             _write_debug(debug_dir, task.task_id, "evidence", evidence)
     except RoutedRuntimeBudgetError:
@@ -184,8 +188,8 @@ def generate_routed_captions(
 
     try:
         _notify_stage(stage_callback, "writing_captions")
-        caption_text = _call_role_with_fallback(
-            task.task_id, "caption", config, client_factory,
+        captions = _call_caption_with_fallback(
+            task.task_id, task.styles, evidence, config, client_factory,
             lambda provider: build_final_caption_messages(task, selected_frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
             temperature=stage_settings.caption_temperature,
             logger=active_logger,
@@ -194,7 +198,7 @@ def generate_routed_captions(
             operation="caption",
             route="caption",
             audio=audio,
-            audio_selected=decision.use_audio,
+            audio_selected=execution.audio_used,
         )
     except RoutedRuntimeBudgetError:
         return _return_with_outcome(build_evidence_based_captions(task.styles, evidence), outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
@@ -202,7 +206,6 @@ def generate_routed_captions(
         active_logger.warning("task_id=%s operation=caption route=caption provider=routed_gemma model=role_configured attempt=0 status=failed elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=%.3f fallback_used=true audio_available=%s audio_selected=%s audio_window_seconds=%.3f error=%s", task.task_id, remaining_time_fn(), FINAL_SYNTHESIS_MIN_SECONDS, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds, type(exc).__name__)
         return _return_with_outcome(build_evidence_based_captions(task.styles, evidence), outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
 
-    captions = _extract_valid_partial_captions(caption_text, task.styles, evidence)
     model_generated_styles = set(captions)
     missing_styles = [style for style in task.styles if style not in captions]
     if missing_styles:
@@ -213,8 +216,8 @@ def generate_routed_captions(
         remaining_before_repair = remaining_time_fn()
         if remaining_before_repair >= FOCUSED_REPAIR_MIN_SECONDS:
             try:
-                repair_text = _call_role_with_fallback(
-                    task.task_id, "caption", config, client_factory,
+                repaired_captions = _call_caption_with_fallback(
+                    task.task_id, missing_styles, evidence, config, client_factory,
                     lambda provider: build_focused_repair_messages(task, missing_styles, captions, selected_frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
                     temperature=stage_settings.repair_temperature,
                     logger=active_logger,
@@ -223,9 +226,8 @@ def generate_routed_captions(
                     operation="focused_repair",
                     route="caption",
                     audio=audio,
-                    audio_selected=decision.use_audio,
+                    audio_selected=execution.audio_used,
                 )
-                repaired_captions = _extract_valid_partial_captions(repair_text, missing_styles, evidence)
                 captions.update(repaired_captions)
                 model_generated_styles.update(repaired_captions)
                 if any(style not in repaired_captions for style in missing_styles):
@@ -352,8 +354,8 @@ def normalize_routed_evidence(payload: Mapping[str, Any], audio_candidate: Audio
         "window_start_seconds": audio_candidate.start_seconds if decision.use_audio else 0.0,
         "window_duration_seconds": audio_candidate.duration_seconds if decision.use_audio else 0.0,
         "speech_present": bool(source_audio.get("speech_present", False)) if status == "usable" else False,
-        "language": str(source_audio.get("language", "")).strip(),
-        "transcript": str(source_audio.get("transcript", "")).strip(),
+        "language": str(source_audio.get("language", "")).strip() if decision.use_audio else "",
+        "transcript": str(source_audio.get("transcript", "")).strip() if decision.use_audio else "",
         "status": status,
         "visual_consistency": visual_consistency,
         "allowed_caption_facts": safe_audio_facts,
@@ -384,11 +386,11 @@ def _single_visual_caption_call(
     task, frames, config, client_factory, remaining_time_fn, logger, *, temperature: float,
     outcome_callback: Callable[[GenerationOutcome], None] | None = None,
 ):
-    from gemmaclip.captioner import build_fallback_captions, extract_caption_json, normalize_captions
+    from gemmaclip.captioner import build_fallback_captions, normalize_captions
     evidence = empty_evidence()
     try:
-        text = _call_role_with_fallback(
-            task.task_id, "visual", config, client_factory,
+        captions = _call_caption_with_fallback(
+            task.task_id, task.styles, evidence, config, client_factory,
             lambda provider: build_final_caption_messages(task, frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
             temperature=temperature,
             logger=logger,
@@ -399,10 +401,156 @@ def _single_visual_caption_call(
             audio=unavailable_audio(16_000, "single-call visual path"),
             audio_selected=False,
         )
-        captions = normalize_captions(extract_caption_json(text, task.styles), task.styles, evidence)
+        captions = normalize_captions(captions, task.styles, evidence)
         return _return_with_outcome(captions, outcome_callback, GENERATION_OUTCOME_MODEL)
     except Exception:
         return _return_with_outcome(build_fallback_captions(task.styles), outcome_callback, GENERATION_OUTCOME_DETERMINISTIC_FALLBACK)
+
+
+def _generate_validated_evidence(
+    task_id: str,
+    frames: Sequence[ExtractedFrame],
+    audio: AudioEvidenceCandidate,
+    decision: RouteDecision,
+    config: RoutedGemmaConfig,
+    client_factory: Callable[[Any], Any],
+    *,
+    temperature: float,
+    logger: logging.Logger,
+    remaining_time_fn: Callable[[], float],
+) -> tuple[dict[str, Any], EvidenceExecution]:
+    from gemmaclip.captioner import request_model_text
+
+    visual_decision = RouteDecision(
+        "visual", False,
+        "audio was not supplied to the Google visual fallback" if decision.use_audio else decision.reason,
+    )
+    no_audio = unavailable_audio(audio.sample_rate, "audio omitted from visual fallback")
+    attempts: list[tuple[Any, RouteDecision, AudioEvidenceCandidate, bool]] = []
+    if decision.use_audio:
+        attempts.extend(
+            (model_config, decision, audio, False)
+            for model_config in config.role_configs("audio_visual")
+            if model_config.provider != DEFAULT_PROVIDER_GOOGLE
+        )
+        attempts.extend(
+            (model_config, visual_decision, no_audio, True)
+            for model_config in config.role_configs("visual")
+            if model_config.provider == DEFAULT_PROVIDER_GOOGLE
+        )
+    else:
+        attempts.extend(
+            (model_config, decision, audio, model_config.provider == DEFAULT_PROVIDER_GOOGLE and bool(config.fireworks_api_key))
+            for model_config in config.role_configs("visual")
+        )
+
+    failures: list[str] = []
+    for attempt, (model_config, attempt_decision, attempt_audio, fallback_used) in enumerate(attempts, start=1):
+        remaining_seconds = remaining_time_fn()
+        if remaining_seconds < EVIDENCE_ATTEMPT_MIN_SECONDS:
+            _log_remote_attempt(
+                logger, task_id, "evidence", attempt_decision.route, model_config.provider,
+                model_config.model, attempt, "skipped_runtime", 0.0, remaining_seconds,
+                EVIDENCE_ATTEMPT_MIN_SECONDS, fallback_used, attempt_audio, attempt_decision.use_audio,
+            )
+            raise RoutedRuntimeBudgetError(
+                f"Only {remaining_seconds:.1f}s remain; need {EVIDENCE_ATTEMPT_MIN_SECONDS:.1f}s before evidence."
+            )
+        started = time.monotonic()
+        try:
+            if decision.use_audio and model_config.provider == DEFAULT_PROVIDER_GOOGLE:
+                cleanup_audio_candidate(audio)
+            messages = build_evidence_messages(
+                task_id, frames, attempt_audio, attempt_decision,
+                google=model_config.provider == DEFAULT_PROVIDER_GOOGLE,
+            )
+            text = request_model_text(
+                client_factory(model_config), messages,
+                temperature=temperature, use_response_format=False,
+            )
+            evidence = normalize_routed_evidence(_extract_object(text), attempt_audio, attempt_decision)
+            if not _has_useful_evidence(evidence):
+                raise ValueError("Evidence did not contain grounded visual observations.")
+            actual_fallback = fallback_used or attempt > 1 or (decision.use_audio and not config.fireworks_api_key)
+            reason = None
+            if actual_fallback and decision.use_audio:
+                reason = "The Fireworks audio-visual model was unavailable, so GemmaClip continued with Google Gemma 4 31B using frames only."
+            elif actual_fallback:
+                reason = "The Fireworks visual model was unavailable, so GemmaClip continued with Google Gemma 4 31B using frames only."
+            execution = EvidenceExecution(
+                provider=model_config.provider,
+                model=model_config.model,
+                modality="audio_visual" if attempt_decision.use_audio else "visual",
+                audio_attempted=decision.use_audio,
+                audio_used=attempt_decision.use_audio,
+                fallback_used=actual_fallback,
+                fallback_reason=reason,
+            )
+            _log_remote_attempt(
+                logger, task_id, "evidence", attempt_decision.route, model_config.provider,
+                model_config.model, attempt, "success", time.monotonic() - started,
+                remaining_seconds, EVIDENCE_ATTEMPT_MIN_SECONDS, actual_fallback,
+                attempt_audio, attempt_decision.use_audio,
+            )
+            return evidence, execution
+        except Exception as exc:
+            failures.append(type(exc).__name__)
+            _log_remote_attempt(
+                logger, task_id, "evidence", attempt_decision.route, model_config.provider,
+                model_config.model, attempt, "invalid_output" if isinstance(exc, ValueError) else "failed",
+                time.monotonic() - started, remaining_seconds, EVIDENCE_ATTEMPT_MIN_SECONDS,
+                fallback_used, attempt_audio, attempt_decision.use_audio,
+            )
+    raise RuntimeError(f"All allowed evidence providers failed: {', '.join(failures) or 'no credentials'}")
+
+
+def _call_caption_with_fallback(
+    task_id: str,
+    styles: Sequence[str],
+    evidence: Mapping[str, Any],
+    config: RoutedGemmaConfig,
+    client_factory: Callable[[Any], Any],
+    message_builder: Callable[[str], Sequence[Mapping[str, Any]]],
+    *,
+    temperature: float,
+    logger: logging.Logger,
+    remaining_time_fn: Callable[[], float],
+    minimum_remaining_seconds: float,
+    operation: str,
+    route: str,
+    audio: AudioEvidenceCandidate,
+    audio_selected: bool,
+) -> dict[str, str]:
+    from gemmaclip.captioner import request_model_text
+
+    failures: list[str] = []
+    for attempt, model_config in enumerate(config.role_configs("caption"), start=1):
+        remaining_seconds = remaining_time_fn()
+        if remaining_seconds < minimum_remaining_seconds:
+            _log_remote_attempt(logger, task_id, operation, route, model_config.provider, model_config.model, attempt, "skipped_runtime", 0.0, remaining_seconds, minimum_remaining_seconds, attempt > 1, audio, audio_selected)
+            raise RoutedRuntimeBudgetError(f"Only {remaining_seconds:.1f}s remain; need {minimum_remaining_seconds:.1f}s before {operation}.")
+        started = time.monotonic()
+        try:
+            text = request_model_text(client_factory(model_config), message_builder(model_config.provider), temperature=temperature, use_response_format=False)
+            captions = _extract_valid_partial_captions(text, styles, evidence)
+            if not captions:
+                raise ValueError("Model did not return any valid requested captions.")
+            _log_remote_attempt(logger, task_id, operation, route, model_config.provider, model_config.model, attempt, "success", time.monotonic() - started, remaining_seconds, minimum_remaining_seconds, attempt > 1, audio, audio_selected)
+            return captions
+        except Exception as exc:
+            failures.append(type(exc).__name__)
+            _log_remote_attempt(logger, task_id, operation, route, model_config.provider, model_config.model, attempt, "invalid_output" if isinstance(exc, ValueError) else "failed", time.monotonic() - started, remaining_seconds, minimum_remaining_seconds, attempt > 1, audio, audio_selected)
+    raise RuntimeError(f"All caption providers failed: {', '.join(failures) or 'no credentials'}")
+
+
+def _has_useful_evidence(evidence: Mapping[str, Any]) -> bool:
+    for key in ("scene", "main_subjects", "actions", "setting", "visible_objects", "camera_notes", "temporal_progression", "verified_description", "caption_focus"):
+        value = evidence.get(key)
+        if isinstance(value, list) and any(str(item).strip() for item in value):
+            return True
+        if not isinstance(value, (list, Mapping)) and str(value or "").strip():
+            return True
+    return False
 
 
 def _call_role_with_fallback(
@@ -562,6 +710,17 @@ def _log_route(logger, task_id, decision, audio, remaining_seconds, minimum_rema
 def _notify_stage(callback: Callable[[str], None] | None, stage: str) -> None:
     if callback is not None:
         callback(stage)
+
+
+def _notify_evidence_execution(
+    callback: Callable[[EvidenceExecution], None] | None,
+    execution: EvidenceExecution,
+) -> None:
+    if callback is not None:
+        try:
+            callback(execution)
+        except Exception as exc:
+            LOGGER.warning("operation=evidence_execution_callback status=failed error=%s", type(exc).__name__)
 
 
 def _return_with_outcome(

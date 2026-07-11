@@ -18,6 +18,7 @@ from gemmaclip.video import VideoMetadata, probe_video
 from gemmaclip.web.adapters import adapt_captions, adapt_evidence, adapt_frames, adapt_video_metadata, selected_route_from_evidence
 from gemmaclip.web.storage import RunStorage
 from gemmaclip.routed import (
+    EvidenceExecution,
     GENERATION_OUTCOME_DETERMINISTIC_FALLBACK,
     GENERATION_OUTCOME_EVIDENCE_FALLBACK,
     GENERATION_OUTCOME_MODEL,
@@ -148,9 +149,13 @@ class WebServices:
         task = Task(run_id, "web-upload", DEFAULT_STYLES)
         debug_dir = self.storage.run_dir(run_id) / "debug"
         outcome: GenerationOutcome | None = None
+        evidence_execution: EvidenceExecution | None = None
         def capture_outcome(value: GenerationOutcome) -> None:
             nonlocal outcome
             outcome = value
+        def capture_evidence_execution(value: EvidenceExecution) -> None:
+            nonlocal evidence_execution
+            evidence_execution = value
         try:
             captions = self.dependencies.caption_generate_fn(
                 task,
@@ -162,6 +167,7 @@ class WebServices:
                 remaining_time_fn=lambda: max(0.0, deadline - time.monotonic()),
                 stage_callback=routed_stage,
                 outcome_callback=capture_outcome,
+                evidence_execution_callback=capture_evidence_execution,
             )
         except Exception as exc:
             raise WebPipelineError("Gemma captioning failed. Check the configured Gemma deployment and try again.") from exc
@@ -176,8 +182,8 @@ class WebServices:
             raise WebPipelineError("Gemma captioning did not produce all required caption styles. Please retry.")
         if outcome == GENERATION_OUTCOME_EVIDENCE_FALLBACK and not evidence:
             raise WebPipelineError("Gemma captioning could not preserve grounded evidence. Please retry.")
-        selected_route, route_reason = selected_route_from_evidence(evidence)
-        adapted_evidence = adapt_evidence(evidence, selected_route=selected_route, route_reason=route_reason)
+        selected_route, route_reason = selected_route_from_evidence(evidence, evidence_execution)
+        adapted_evidence = adapt_evidence(evidence, selected_route=selected_route, route_reason=route_reason, execution=evidence_execution)
         adapted_caption_results = adapt_captions(captions, evidence)
         self.storage.write_artifact_json(run_id, "debug/evidence.json", evidence)
         self.storage.write_artifact_json(run_id, "debug/captions.json", captions)

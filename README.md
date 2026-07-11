@@ -45,7 +45,12 @@ Runtime model configuration:
 
 The `routed_gemma` provider makes Gemma 4 the reasoning and writing core. Gemma 4 26B A4B produces visual evidence when audio is absent, silent, or unsafe to process. Gemma 4 12B Unified produces routed audio-visual evidence when a bounded audio window is useful and runtime permits. Gemma 4 31B then receives the six chronological hybrid frames, structured evidence, requested styles, and exact output schema to produce final captions.
 
-Fireworks is the primary endpoint for each role; Google is the same-role fallback. No non-Gemma model is silently substituted. This split is intended to remain portable to AMD-hosted deployments as compatible Gemma endpoints become available. Audio support is primarily speech-aware evidence from one selected window of at most 30 seconds; GemmaClip does not claim comprehensive understanding of environmental sounds.
+Fireworks is the primary endpoint for each role. Visual evidence falls back to Google Gemma 4 31B. Fireworks audio-visual inference is optional: if it is unavailable or invalid, GemmaClip drops audio and continues through Google Gemma 4 31B using visual frames only. Caption synthesis falls back from Fireworks 31B to Google 31B. No non-Gemma model is silently substituted, and audio is never sent to Google 31B in this fallback configuration.
+
+```text
+GOOGLE_GEMMA_VISUAL_MODEL=gemma-4-31b-it
+GOOGLE_GEMMA_CAPTION_MODEL=gemma-4-31b-it
+```
 
 Routed calls recheck the live deadline before every Fireworks or Google attempt. Audio preprocessing is skipped below its runtime threshold, and the full degradation ladder is reapplied afterward. Final synthesis falls back to grounded evidence captions when fewer than 70 seconds remain, while optional repair preserves valid captions and fills missing styles locally below the same threshold. RMS is only an energy heuristic, not confirmation of speech.
 

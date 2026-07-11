@@ -70,6 +70,9 @@ function EvidenceStage() {
           reason={ev.routeReason}
           auto={route === "auto"}
           audio={ev.audio}
+          provider={ev.routeProvider}
+          modality={ev.routeModality}
+          audioFallbackOccurred={ev.audioFallbackOccurred}
         />
       </div>
 

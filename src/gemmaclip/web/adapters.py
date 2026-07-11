@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from gemmaclip.frames import ExtractedFrame
+from gemmaclip.routed import EvidenceExecution
 from gemmaclip.video import VideoMetadata
 
 
@@ -69,7 +70,7 @@ def adapt_frames(run_id: str, frames: Sequence[ExtractedFrame]) -> list[dict[str
     return adapted
 
 
-def adapt_evidence(evidence: Mapping[str, Any], *, selected_route: str, route_reason: str) -> dict[str, Any]:
+def adapt_evidence(evidence: Mapping[str, Any], *, selected_route: str, route_reason: str, execution: EvidenceExecution | None = None) -> dict[str, Any]:
     audio = evidence.get("audio") if isinstance(evidence.get("audio"), Mapping) else {}
     style_hooks = evidence.get("style_hooks")
     if isinstance(style_hooks, Mapping):
@@ -81,6 +82,10 @@ def adapt_evidence(evidence: Mapping[str, Any], *, selected_route: str, route_re
     return {
         "selectedRoute": selected_route,
         "routeReason": route_reason,
+        "routeProvider": execution.provider if execution else "unknown",
+        "routeModel": _safe_model_label(execution.model) if execution else "unknown",
+        "routeModality": execution.modality if execution else ("audio_visual" if bool(audio.get("available")) else "visual"),
+        "audioFallbackOccurred": bool(execution and execution.audio_attempted and not execution.audio_used),
         "scene": str(evidence.get("scene", "")),
         "subjects": _strings(evidence.get("main_subjects")),
         "actions": _strings(evidence.get("actions")),
@@ -132,7 +137,15 @@ def adapt_captions(captions: Mapping[str, str], evidence: Mapping[str, Any]) -> 
     return results
 
 
-def selected_route_from_evidence(evidence: Mapping[str, Any]) -> tuple[str, str]:
+def selected_route_from_evidence(evidence: Mapping[str, Any], execution: EvidenceExecution | None = None) -> tuple[str, str]:
+    if execution is not None:
+        model = execution.model.lower()
+        selected = "gemma-4-31b" if "31b" in model else "gemma-4-12b-unified" if "12b" in model else "gemma-4-26b-a4b"
+        if execution.fallback_reason:
+            return selected, execution.fallback_reason
+        if execution.modality == "audio_visual":
+            return selected, "Gemma 4 12B Unified produced evidence from six frames and the selected audio window."
+        return selected, f"{execution.provider.title()} {_safe_model_label(execution.model)} produced visual-only evidence from six frames."
     audio = evidence.get("audio") if isinstance(evidence.get("audio"), Mapping) else {}
     status = str(audio.get("status", "unavailable")).lower()
     if bool(audio.get("available")):
@@ -182,3 +195,14 @@ def _audio_status(value: Any) -> str:
 def _visual_consistency(value: Any) -> str:
     status = str(value or "unknown").lower()
     return status if status in {"consistent", "contradictory", "unknown"} else "unknown"
+
+
+def _safe_model_label(model: str) -> str:
+    lowered = model.lower()
+    if "31b" in lowered:
+        return "Gemma 4 31B"
+    if "12b" in lowered:
+        return "Gemma 4 12B Unified"
+    if "26b" in lowered:
+        return "Gemma 4 26B A4B"
+    return "Configured Gemma model"

@@ -82,7 +82,8 @@ export interface AudioSegment {
 export type ModelRoute =
   | "auto"
   | "gemma-4-26b-a4b"
-  | "gemma-4-12b-unified";
+  | "gemma-4-12b-unified"
+  | "gemma-4-31b";
 
 export interface EvidenceConfig {
   route: ModelRoute;
@@ -96,6 +97,10 @@ export interface EvidenceConfig {
 export interface StructuredEvidence {
   selectedRoute: Exclude<ModelRoute, "auto">;
   routeReason: string;
+  routeProvider: string;
+  routeModel: string;
+  routeModality: "visual" | "audio_visual";
+  audioFallbackOccurred: boolean;
   scene: string;
   subjects: string[];
   actions: string[];

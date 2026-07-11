@@ -9,14 +9,18 @@ interface Props {
   auto?: boolean;
   audio: StructuredEvidence["audio"];
   className?: string;
+  provider?: string;
+  modality?: "visual" | "audio_visual";
+  audioFallbackOccurred?: boolean;
 }
 
 const ROUTE_LABEL: Record<Exclude<ModelRoute, "auto">, string> = {
   "gemma-4-26b-a4b": "Gemma 4 · 26B A4B",
   "gemma-4-12b-unified": "Gemma 4 · 12B Unified",
+  "gemma-4-31b": "Gemma 4 · 31B",
 };
 
-export function RouteDecision({ selected, reason, auto, audio, className }: Props) {
+export function RouteDecision({ selected, reason, auto, audio, className, provider, modality, audioFallbackOccurred }: Props) {
   return (
     <div className={cn("relative overflow-hidden rounded-xl border border-border bg-card", className)}>
       <div className="pointer-events-none absolute inset-0 ember-glow opacity-40" />
@@ -31,9 +35,11 @@ export function RouteDecision({ selected, reason, auto, audio, className }: Prop
           <div className="mt-2 flex flex-wrap gap-1.5">
             {auto && <Badge variant="outline">auto-routed</Badge>}
             <Badge className="border-ember/40 bg-ember-soft text-ink">
-              {selected === "gemma-4-12b-unified" ? "visual + audio" : "visual only"}
+              {audio.status !== "unavailable" && selected === "gemma-4-12b-unified" ? "visual + audio" : "visual only"}
             </Badge>
             <Badge variant="secondary">audio {audio.status}</Badge>
+            {provider && <Badge variant="outline">{provider}</Badge>}
+            {audioFallbackOccurred && <Badge variant="outline">audio dropped safely</Badge>}
           </div>
         </div>
         <div className="hidden bg-border md:block" />
@@ -42,6 +48,7 @@ export function RouteDecision({ selected, reason, auto, audio, className }: Prop
             reason
           </div>
           <p className="mt-2 text-pretty text-sm leading-relaxed">{reason}</p>
+          {modality && <p className="mt-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">actual modality: {modality.replace("_", " + ")}</p>}
         </div>
       </div>
     </div>
