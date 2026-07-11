@@ -12,6 +12,7 @@ import { Play, RotateCw } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { runKey } from "@/lib/hooks";
 import type { ProcessingPreset } from "@/lib/types";
+import { ProcessingState } from "@/components/StateViews";
 
 export const Route = createFileRoute("/lab/$runId/video")({
   component: VideoStage,
@@ -43,7 +44,7 @@ function VideoStage() {
     setBusy(false);
   }
 
-  if (!run) return null;
+  if (!run || run.stages.video !== "complete") return <ProcessingState />;
 
   return (
     <div>

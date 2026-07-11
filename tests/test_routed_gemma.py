@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -345,15 +346,21 @@ def test_selected_audio_without_fireworks_uses_google_visual_and_cleans_selected
     class Client:
         def __init__(self, model_config): self.model_config = model_config
         def chat_completion_text(self, messages, temperature, **kwargs):
-            calls.append(self.model_config.model)
+            calls.append((self.model_config.model, [part["type"] for part in messages[1]["content"]]))
             return responses.pop(0)
     generate_routed_captions(
         task, _frames(tmp_path), tmp_path / "video.mp4", config=config,
         env={"GEMMACLIP_AUDIO_MODE": "auto"}, client_factory=Client,
         remaining_time_fn=lambda: 500.0,
+        debug_dir=tmp_path / "debug",
     )
-    assert calls == [config.google_visual_model, config.google_caption_model]
-    assert config.google_audio_visual_model not in calls
+    assert [model for model, _ in calls] == [config.google_visual_model, config.google_caption_model]
+    assert config.google_audio_visual_model not in [model for model, _ in calls]
+    assert "audio_file" not in calls[0][1] and "input_audio" not in calls[0][1]
+    evidence = json.loads((tmp_path / "debug" / "v1_routed_evidence.json").read_text(encoding="utf-8"))
+    assert evidence["audio"]["status"] == "unavailable"
+    assert evidence["audio"]["transcript"] == ""
+    assert evidence["audio"]["allowed_caption_facts"] == []
     assert not audio_path.exists()
 
 
@@ -437,6 +444,31 @@ def test_malformed_fireworks_evidence_and_caption_json_fall_through_to_google(tm
         (DEFAULT_PROVIDER_FIREWORKS, config.fireworks_caption_model),
         (DEFAULT_PROVIDER_GOOGLE, config.google_caption_model),
     ]
+
+
+def test_partial_fireworks_captions_are_preserved_while_google_receives_only_missing_styles(tmp_path, monkeypatch):
+    styles = ("formal", "sarcastic", "humorous_tech", "humorous_non_tech")
+    task = Task("v1", "https://example.com/v.mp4", styles)
+    config = load_gemma_config({"GEMMACLIP_PROVIDER": "routed_gemma", "FIREWORKS_API_KEY": "fw", "GOOGLE_API_KEY": "google"})
+    monkeypatch.setattr("gemmaclip.captioner.make_jpeg_data_url", lambda path: "data:image/jpeg;base64,anBlZw==")
+    caption_prompts = []
+    class Client:
+        def __init__(self, model_config): self.model_config = model_config
+        def chat_completion_text(self, messages, temperature, **kwargs):
+            prompt = messages[1]["content"][-1]["text"]
+            if messages[0]["content"].startswith("Return JSON"):
+                return '{"main_subjects":["a person"],"actions":["walking through a room"],"setting":"an indoor room"}'
+            caption_prompts.append((self.model_config.provider, prompt))
+            if self.model_config.provider == DEFAULT_PROVIDER_FIREWORKS:
+                return '{"formal":"A person walks through an indoor room while six chronological frames preserve the visible setting and straightforward movement with clear detail."}'
+            return '{"sarcastic":"A person boldly crosses an ordinary room, completing the legendary indoor journey while the furniture somehow survives another historic event.","humorous_tech":"A person deploys across the room with stable uptime, predictable routing, and no visible navigation exceptions during the brief indoor sequence.","humorous_non_tech":"A person crosses the room while the furniture enjoys front-row seats to the day most committed journey toward somewhere nearby."}'
+    captions = generate_routed_captions(task, _frames(tmp_path), tmp_path / "video.mp4", config=config, env={"GEMMACLIP_AUDIO_MODE": "off"}, client_factory=Client, remaining_time_fn=lambda: 500.0)
+    assert set(captions) == set(styles)
+    assert captions["formal"].startswith("A person walks")
+    assert [provider for provider, _ in caption_prompts] == [DEFAULT_PROVIDER_FIREWORKS, DEFAULT_PROVIDER_GOOGLE]
+    google_prompt = caption_prompts[1][1]
+    assert '"formal": "<18-35 word caption>"' not in google_prompt
+    assert all(f'"{style}": "<18-35 word caption>"' in google_prompt for style in styles[1:])
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,7 @@ import { api } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { runKey } from "@/lib/hooks";
 import type { AudioMode, AudioConfig } from "@/lib/types";
+import { ProcessingState } from "@/components/StateViews";
 
 export const Route = createFileRoute("/lab/$runId/audio")({
   component: AudioStage,
@@ -39,7 +40,7 @@ function AudioStage() {
   );
   const [busy, setBusy] = useState(false);
 
-  if (!run) return null;
+  if (!run || run.stages.audio !== "complete") return <ProcessingState />;
 
   async function apply() {
     setBusy(true);

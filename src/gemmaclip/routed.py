@@ -190,7 +190,10 @@ def generate_routed_captions(
         _notify_stage(stage_callback, "writing_captions")
         captions = _call_caption_with_fallback(
             task.task_id, task.styles, evidence, config, client_factory,
-            lambda provider: build_final_caption_messages(task, selected_frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
+            lambda provider, missing: build_final_caption_messages(
+                Task(task.task_id, task.video_url, tuple(missing)), selected_frames, evidence,
+                google=provider == DEFAULT_PROVIDER_GOOGLE,
+            ),
             temperature=stage_settings.caption_temperature,
             logger=active_logger,
             remaining_time_fn=remaining_time_fn,
@@ -218,7 +221,10 @@ def generate_routed_captions(
             try:
                 repaired_captions = _call_caption_with_fallback(
                     task.task_id, missing_styles, evidence, config, client_factory,
-                    lambda provider: build_focused_repair_messages(task, missing_styles, captions, selected_frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
+                    lambda provider, missing: build_focused_repair_messages(
+                        task, missing, captions, selected_frames, evidence,
+                        google=provider == DEFAULT_PROVIDER_GOOGLE,
+                    ),
                     temperature=stage_settings.repair_temperature,
                     logger=active_logger,
                     remaining_time_fn=remaining_time_fn,
@@ -391,7 +397,10 @@ def _single_visual_caption_call(
     try:
         captions = _call_caption_with_fallback(
             task.task_id, task.styles, evidence, config, client_factory,
-            lambda provider: build_final_caption_messages(task, frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
+            lambda provider, missing: build_final_caption_messages(
+                Task(task.task_id, task.video_url, tuple(missing)), frames, evidence,
+                google=provider == DEFAULT_PROVIDER_GOOGLE,
+            ),
             temperature=temperature,
             logger=logger,
             remaining_time_fn=remaining_time_fn,
@@ -510,7 +519,7 @@ def _call_caption_with_fallback(
     evidence: Mapping[str, Any],
     config: RoutedGemmaConfig,
     client_factory: Callable[[Any], Any],
-    message_builder: Callable[[str], Sequence[Mapping[str, Any]]],
+    message_builder: Callable[[str, Sequence[str]], Sequence[Mapping[str, Any]]],
     *,
     temperature: float,
     logger: logging.Logger,
@@ -524,22 +533,30 @@ def _call_caption_with_fallback(
     from gemmaclip.captioner import request_model_text
 
     failures: list[str] = []
+    collected: dict[str, str] = {}
     for attempt, model_config in enumerate(config.role_configs("caption"), start=1):
+        missing = [style for style in styles if style not in collected]
+        if not missing:
+            break
         remaining_seconds = remaining_time_fn()
         if remaining_seconds < minimum_remaining_seconds:
             _log_remote_attempt(logger, task_id, operation, route, model_config.provider, model_config.model, attempt, "skipped_runtime", 0.0, remaining_seconds, minimum_remaining_seconds, attempt > 1, audio, audio_selected)
+            if collected:
+                break
             raise RoutedRuntimeBudgetError(f"Only {remaining_seconds:.1f}s remain; need {minimum_remaining_seconds:.1f}s before {operation}.")
         started = time.monotonic()
         try:
-            text = request_model_text(client_factory(model_config), message_builder(model_config.provider), temperature=temperature, use_response_format=False)
-            captions = _extract_valid_partial_captions(text, styles, evidence)
+            text = request_model_text(client_factory(model_config), message_builder(model_config.provider, missing), temperature=temperature, use_response_format=False)
+            captions = _extract_valid_partial_captions(text, missing, evidence)
             if not captions:
                 raise ValueError("Model did not return any valid requested captions.")
+            collected.update(captions)
             _log_remote_attempt(logger, task_id, operation, route, model_config.provider, model_config.model, attempt, "success", time.monotonic() - started, remaining_seconds, minimum_remaining_seconds, attempt > 1, audio, audio_selected)
-            return captions
         except Exception as exc:
             failures.append(type(exc).__name__)
             _log_remote_attempt(logger, task_id, operation, route, model_config.provider, model_config.model, attempt, "invalid_output" if isinstance(exc, ValueError) else "failed", time.monotonic() - started, remaining_seconds, minimum_remaining_seconds, attempt > 1, audio, audio_selected)
+    if collected:
+        return collected
     raise RuntimeError(f"All caption providers failed: {', '.join(failures) or 'no credentials'}")
 
 

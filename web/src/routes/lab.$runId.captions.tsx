@@ -16,6 +16,7 @@ import { runKey } from "@/lib/hooks";
 import type { CaptionStyle, CaptionConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { GenerationOutcomeNotice } from "@/components/GenerationOutcomeNotice";
+import { ProcessingState } from "@/components/StateViews";
 
 export const Route = createFileRoute("/lab/$runId/captions")({
   component: CaptionsStage,
@@ -47,7 +48,7 @@ function CaptionsStage() {
   );
   const [busy, setBusy] = useState(false);
 
-  if (!run) return null;
+  if (!run || run.stages.captions !== "complete") return <ProcessingState />;
 
   function toggleStyle(s: CaptionStyle) {
     setStyles((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));

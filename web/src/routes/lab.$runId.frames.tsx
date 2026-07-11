@@ -15,6 +15,7 @@ import { api } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { runKey } from "@/lib/hooks";
 import type { FrameMethod } from "@/lib/types";
+import { ProcessingState } from "@/components/StateViews";
 
 export const Route = createFileRoute("/lab/$runId/frames")({
   component: FramesStage,
@@ -38,7 +39,7 @@ function FramesStage() {
   const [sens, setSens] = useState(run?.frames.config.changeSensitivity ?? 0.55);
   const [busy, setBusy] = useState(false);
 
-  if (!run) return null;
+  if (!run || run.stages.frames !== "complete") return <ProcessingState />;
 
   async function extract() {
     setBusy(true);

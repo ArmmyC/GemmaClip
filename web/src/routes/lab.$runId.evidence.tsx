@@ -17,6 +17,7 @@ import { api } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { runKey } from "@/lib/hooks";
 import type { ModelRoute } from "@/lib/types";
+import { ProcessingState } from "@/components/StateViews";
 
 export const Route = createFileRoute("/lab/$runId/evidence")({
   component: EvidenceStage,
@@ -39,7 +40,7 @@ function EvidenceStage() {
   const [showRaw, setShowRaw] = useState(run?.evidence.config.showRawJson ?? false);
   const [busy, setBusy] = useState(false);
 
-  if (!run) return null;
+  if (!run || run.stages.evidence !== "complete") return <ProcessingState />;
   const ev = run.evidence.result;
 
   async function apply() {

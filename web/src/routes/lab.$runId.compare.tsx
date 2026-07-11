@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { PrevNext } from "@/components/PrevNext";
 import { useRun } from "@/lib/hooks";
+import { ProcessingState } from "@/components/StateViews";
 import { StageHeader } from "./lab.$runId.video";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -23,7 +24,7 @@ function CompareStage() {
   const { runId } = Route.useParams();
   const { data: run } = useRun(runId);
   const [active, setActive] = useState<(typeof PRESETS)[number]["id"]>("methods");
-  if (!run) return null;
+  if (!run || run.stages.captions !== "complete") return <ProcessingState />;
 
   if (run.experiments.length < 2) return <div><StageHeader eyebrow="stage 06 · compare" title="Compare experiments" description="Real experiment creation and comparison are coming in the next integration phase. No mock results are shown."/><div className="rounded-xl border border-dashed border-border bg-card p-8 text-center text-muted-foreground">This Quick Caption run has no stored experiments yet.</div><PrevNext runId={runId} prev={{ to: "/lab/$runId/captions", label: "Captions" }}/></div>;
 

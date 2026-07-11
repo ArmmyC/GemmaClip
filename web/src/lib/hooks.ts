@@ -8,6 +8,10 @@ export function useRun(runId: string) {
   return useQuery({
     queryKey: runKey(runId),
     queryFn: () => api.getRun(runId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "pending" || status === "processing" ? 1000 : false;
+    },
   });
 }
 
