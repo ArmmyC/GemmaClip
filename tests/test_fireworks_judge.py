@@ -351,9 +351,13 @@ class ScriptedJudgeClient:
     def __init__(self, responses):
         self.responses = list(responses)
         self.messages: list[list[dict[str, object]]] = []
+        self.temperatures: list[float] = []
+        self.operations: list[str | None] = []
 
     def complete_json(self, messages, *, temperature, validator, **kwargs):
         self.messages.append(messages)
+        self.temperatures.append(temperature)
+        self.operations.append(kwargs.get("operation"))
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -374,7 +378,37 @@ def test_fireworks_judge_keeps_strong_captions_and_uses_requested_keys_only(tmp_
     assert captions == first
     assert set(captions) == {"formal", "sarcastic"}
     assert len(scripted.messages) == 2
+    assert scripted.operations == ["generation", "review"]
+    assert scripted.temperatures == [0.4, 0.0]
     assert all(len([part for part in call[1]["content"] if part.get("type") == "image_url"]) == 6 for call in scripted.messages)
+
+
+def test_fireworks_focused_repair_and_review_use_their_exact_temperatures(tmp_path):
+    initial = initial_captions()
+    incomplete = {"formal": initial["formal"]}
+    repaired = {"sarcastic": initial["sarcastic"]}
+    reviewed = dict(
+        initial,
+        sarcastic="A worker stands beside a desk and monitor, giving stillness the polished confidence of a major presentation.",
+    )
+    scripted = ScriptedJudgeClient([incomplete, repaired, {"captions": reviewed}])
+
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: scripted,
+        remaining_seconds=300.0,
+    )
+
+    assert captions == reviewed
+    assert scripted.operations == ["generation", "repair", "review"]
+    assert scripted.temperatures == [0.4, 0.25, 0.0]
+    assert len(scripted.messages) == 3
+    assert all(
+        len([part for part in call[1]["content"] if part.get("type") == "image_url"]) == 6
+        for call in scripted.messages
+    )
 
 
 def test_fireworks_judge_replaces_weak_caption_and_preserves_first_when_review_is_invalid_or_fails(tmp_path):

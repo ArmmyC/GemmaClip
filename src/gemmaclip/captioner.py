@@ -1375,7 +1375,7 @@ def generate_fireworks_judge_review_captions(
     messages = build_fireworks_judge_review_messages(task.task_id, task.styles, frames, captions)
     return client.complete_json(
         messages,
-        temperature=0.25,
+        temperature=0.0,
         validator=lambda payload: _validate_fireworks_judge_review(payload, task.styles),
         remaining_time_fn=remaining_time_fn,
         minimum_remaining_seconds=FIREWORKS_JUDGE_MIN_GENERATION_REMAINING_SECONDS,
