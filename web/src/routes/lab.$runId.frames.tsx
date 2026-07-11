@@ -66,7 +66,7 @@ function FramesStage() {
       <div className="grid gap-6 lg:grid-cols-[1fr_1.6fr]">
         <ConfigSection
           title="Extraction"
-          description="Change any setting to invalidate downstream stages until you extract again."
+          description="Inspect the settings that produced this run."
           actions={
             <Button size="sm" className="gap-1.5" onClick={extract} disabled title="Interactive reruns coming in the next integration phase">
               {busy ? (
@@ -81,21 +81,23 @@ function FramesStage() {
             </Button>
           }
         >
-          <p className="text-xs text-muted-foreground">Interactive reruns coming in the next integration phase.</p>
-          <RadioGroup value={method} onValueChange={(v) => setMethod(v as FrameMethod)} className="grid gap-2">
+          <p className="rounded-md border border-white/10 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+            Configuration preview. Reruns are not available for this run yet.
+          </p>
+          <RadioGroup disabled value={method} onValueChange={(v) => setMethod(v as FrameMethod)} className="grid gap-2">
             {METHODS.map((m) => (
               <label
                 key={m.id}
                 htmlFor={`m-${m.id}`}
-                className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition ${
+                className={`flex items-start gap-3 rounded-lg border p-3 transition ${
                   method === m.id
                     ? "border-ember bg-ember-soft"
-                    : "border-white/10 bg-background hover:border-white/20"
+                    : "border-white/10 bg-background"
                 }`}
               >
-                <RadioGroupItem id={`m-${m.id}`} value={m.id} className="mt-0.5" />
+                <RadioGroupItem disabled id={`m-${m.id}`} value={m.id} className="mt-0.5" />
                 <div>
-                  <Label htmlFor={`m-${m.id}`} className="cursor-pointer font-medium">
+                  <Label htmlFor={`m-${m.id}`} className="font-medium">
                     {m.label}
                   </Label>
                   <p className="mt-0.5 text-xs text-muted-foreground">{m.note}</p>
@@ -105,21 +107,21 @@ function FramesStage() {
           </RadioGroup>
 
           <Field label="Total frames" hint={<span className="font-mono">{total}</span>}>
-            <Slider value={[total]} onValueChange={([v]) => setTotal(v)} min={2} max={16} step={1} />
+              <Slider disabled value={[total]} onValueChange={([v]) => setTotal(v)} min={2} max={16} step={1} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Anchors" hint={<span className="font-mono">{anchors}</span>}>
-              <Slider value={[anchors]} onValueChange={([v]) => setAnchors(v)} min={0} max={6} step={1} />
+              <Slider disabled value={[anchors]} onValueChange={([v]) => setAnchors(v)} min={0} max={6} step={1} />
             </Field>
             <Field label="High change" hint={<span className="font-mono">{high}</span>}>
-              <Slider value={[high]} onValueChange={([v]) => setHigh(v)} min={0} max={8} step={1} />
+              <Slider disabled value={[high]} onValueChange={([v]) => setHigh(v)} min={0} max={8} step={1} />
             </Field>
           </div>
           <Field label="Min spacing" hint={<span className="font-mono">{spacing.toFixed(1)}s</span>}>
-            <Slider value={[spacing]} onValueChange={([v]) => setSpacing(v)} min={0.2} max={5} step={0.1} />
+            <Slider disabled value={[spacing]} onValueChange={([v]) => setSpacing(v)} min={0.2} max={5} step={0.1} />
           </Field>
           <Field label="Change sensitivity" hint={<span className="font-mono">{sens.toFixed(2)}</span>}>
-            <Slider value={[sens]} onValueChange={([v]) => setSens(v)} min={0} max={1} step={0.01} />
+            <Slider disabled value={[sens]} onValueChange={([v]) => setSens(v)} min={0} max={1} step={0.01} />
           </Field>
         </ConfigSection>
 

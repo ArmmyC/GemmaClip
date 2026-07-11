@@ -58,7 +58,7 @@ function VideoStage() {
         <div className="space-y-6">
           <div className={`relative overflow-hidden rounded-xl border border-border ${posterGrad} aspect-video`}>
             <video className="absolute inset-0 h-full w-full bg-ink object-contain" controls src={mediaUrl(runId)} aria-label={`Uploaded video ${run.video.filename}`} />
-            <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-ink/90 to-transparent px-5 py-4 font-mono text-xs text-paper/80">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-ink/90 to-transparent px-5 py-4 font-mono text-xs text-paper/80">
               <span>{run.video.filename}</span>
               <span>{run.video.durationSec.toFixed(1)}s</span>
             </div>
@@ -66,14 +66,18 @@ function VideoStage() {
 
           <ConfigSection
             title="Processing preset"
-            description="Presets seed downstream configuration. You can still change any single stage individually."
+          description="Inspect the preset that seeded this run."
             actions={
               <Button onClick={runPreset} disabled size="sm" className="gap-1.5" title="Interactive reruns coming in the next integration phase">
                 <RotateCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} /> Apply preset
               </Button>
             }
           >
+            <p className="mb-4 rounded-md border border-white/10 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+              Configuration preview. Applying a new preset is not available for this run yet.
+            </p>
             <RadioGroup
+              disabled
               value={preset}
               onValueChange={(v) => setPreset(v as ProcessingPreset)}
               className="grid gap-2 md:grid-cols-2"
@@ -82,15 +86,15 @@ function VideoStage() {
                 <label
                   key={p.id}
                   htmlFor={`preset-${p.id}`}
-                  className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition ${
+                  className={`flex items-start gap-3 rounded-lg border p-3 transition ${
                     preset === p.id
                       ? "border-ember bg-ember-soft"
-                      : "border-white/10 bg-background hover:border-white/20"
+                      : "border-white/10 bg-background"
                   }`}
                 >
-                  <RadioGroupItem id={`preset-${p.id}`} value={p.id} className="mt-0.5" />
+                  <RadioGroupItem disabled id={`preset-${p.id}`} value={p.id} className="mt-0.5" />
                   <div>
-                    <Label htmlFor={`preset-${p.id}`} className="cursor-pointer font-medium">
+                    <Label htmlFor={`preset-${p.id}`} className="font-medium">
                       {p.label}
                     </Label>
                     <p className="mt-0.5 text-xs text-muted-foreground">{p.note}</p>

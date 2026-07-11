@@ -52,6 +52,8 @@ export function PipelineStepper({ runId, states, status, generationOutcome }: Pr
                         ? "border-ember/60 bg-ember-soft text-ember"
                         : "border-white/10 bg-background text-muted-foreground",
                     )}
+                    role="img"
+                    aria-label={`${s.label}: ${state}`}
                   >
                     {state === "complete" ? (
                       <Check className="h-3 w-3" />

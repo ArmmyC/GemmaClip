@@ -74,6 +74,7 @@ function AudioStage() {
       <div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
         <ConfigSection
           title="Audio configuration"
+          description="Inspect the audio settings used by this run."
           actions={
             <Button size="sm" className="gap-1.5" onClick={apply} disabled title="Interactive reruns coming in the next integration phase">
               {busy ? <RotateCw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
@@ -81,20 +82,23 @@ function AudioStage() {
             </Button>
           }
         >
-          <RadioGroup value={mode} onValueChange={(v) => setMode(v as AudioMode)} className="grid gap-2">
+          <p className="rounded-md border border-white/10 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+            Configuration preview. Applying new audio settings is not available for this run yet.
+          </p>
+          <RadioGroup disabled value={mode} onValueChange={(v) => setMode(v as AudioMode)} className="grid gap-2">
             {MODES.map((m) => (
               <label
                 key={m.id}
                 htmlFor={`am-${m.id}`}
-                className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition ${
+                className={`flex items-start gap-3 rounded-lg border p-3 transition ${
                   mode === m.id
                     ? "border-ember bg-ember-soft"
-                    : "border-white/10 bg-background hover:border-white/20"
+                    : "border-white/10 bg-background"
                 }`}
               >
-                <RadioGroupItem id={`am-${m.id}`} value={m.id} className="mt-0.5" />
+                <RadioGroupItem disabled id={`am-${m.id}`} value={m.id} className="mt-0.5" />
                 <div>
-                  <Label htmlFor={`am-${m.id}`} className="cursor-pointer font-medium">{m.label}</Label>
+                  <Label htmlFor={`am-${m.id}`} className="font-medium">{m.label}</Label>
                   <p className="mt-0.5 text-xs text-muted-foreground">{m.note}</p>
                 </div>
               </label>
@@ -102,11 +106,11 @@ function AudioStage() {
           </RadioGroup>
 
           <Field label="Max analysis duration" hint={<span className="font-mono">{maxDur}s</span>}>
-            <Slider value={[maxDur]} onValueChange={([v]) => setMaxDur(v)} min={1} max={30} step={1} />
+            <Slider disabled value={[maxDur]} onValueChange={([v]) => setMaxDur(v)} min={1} max={30} step={1} />
           </Field>
           <Field label="Sample rate">
             <Select value={rate} onValueChange={setRate}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger disabled><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="8000">8 kHz</SelectItem>
                 <SelectItem value="16000">16 kHz</SelectItem>
@@ -116,11 +120,11 @@ function AudioStage() {
             </Select>
           </Field>
           <Field label="Min RMS energy" hint={<span className="font-mono">{minRms.toFixed(3)}</span>}>
-            <Slider value={[minRms]} onValueChange={([v]) => setMinRms(v)} min={0.001} max={0.2} step={0.001} />
+            <Slider disabled value={[minRms]} onValueChange={([v]) => setMinRms(v)} min={0.001} max={0.2} step={0.001} />
           </Field>
           <Field label="Selection strategy">
             <Select value={strategy} onValueChange={(v) => setStrategy(v as AudioConfig["strategy"])}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger disabled><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="highest-energy">Highest energy window</SelectItem>
                 <SelectItem value="first-non-silent">First non-silent window</SelectItem>

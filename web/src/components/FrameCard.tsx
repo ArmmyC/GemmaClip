@@ -68,18 +68,24 @@ export function FrameCard({ frame, onToggle, className }: Props) {
             Δ {frame.changeScore.toFixed(2)}
           </Badge>
         </div>
-        <label className="flex items-center justify-between pt-1">
-          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-            include
-          </span>
-          <Switch
-            checked={included}
-            onCheckedChange={(v) => {
-              setIncluded(v);
-              onToggle?.(frame.id, v);
-            }}
-          />
-        </label>
+        {onToggle ? (
+          <label className="flex items-center justify-between pt-1">
+            <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+              include
+            </span>
+            <Switch
+              checked={included}
+              onCheckedChange={(v) => {
+                setIncluded(v);
+                onToggle(frame.id, v);
+              }}
+            />
+          </label>
+        ) : (
+          <div className="pt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            selection stored by pipeline
+          </div>
+        )}
       </div>
     </div>
   );

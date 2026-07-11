@@ -94,20 +94,23 @@ function CaptionsStage() {
             </Button>
           }
         >
+          <p className="rounded-md border border-white/10 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+            Configuration preview. Generating a new caption pass is not available for this run yet.
+          </p>
           <Field label="Temperature" hint={<span className="font-mono">{temp.toFixed(2)}</span>}>
-            <Slider value={[temp]} onValueChange={([v]) => setTemp(v)} min={0} max={1.2} step={0.05} />
+            <Slider disabled value={[temp]} onValueChange={([v]) => setTemp(v)} min={0} max={1.2} step={0.05} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Min words" hint={<span className="font-mono">{minW}</span>}>
-              <Slider value={[minW]} onValueChange={([v]) => setMinW(v)} min={4} max={40} step={1} />
+              <Slider disabled value={[minW]} onValueChange={([v]) => setMinW(v)} min={4} max={40} step={1} />
             </Field>
             <Field label="Max words" hint={<span className="font-mono">{maxW}</span>}>
-              <Slider value={[maxW]} onValueChange={([v]) => setMaxW(v)} min={12} max={120} step={1} />
+              <Slider disabled value={[maxW]} onValueChange={([v]) => setMaxW(v)} min={12} max={120} step={1} />
             </Field>
           </div>
           <Field label="Audio evidence">
             <Select value={audioMode} onValueChange={(v) => setAudioMode(v as CaptionConfig["audioEvidenceMode"])}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger disabled><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="ignore">Ignore</SelectItem>
                 <SelectItem value="use-if-present">Use if present</SelectItem>
@@ -120,14 +123,14 @@ function CaptionsStage() {
               <div className="text-sm font-medium">Strict grounding</div>
               <div className="text-xs text-muted-foreground">Reject captions that add unsupported claims.</div>
             </div>
-            <Switch checked={strict} onCheckedChange={setStrict} />
+            <Switch disabled checked={strict} onCheckedChange={setStrict} />
           </label>
           <label className="flex items-center justify-between rounded-lg border border-border bg-background p-3">
             <div>
               <div className="text-sm font-medium">Focused repair</div>
               <div className="text-xs text-muted-foreground">Repair problem lines instead of rejecting the whole caption.</div>
             </div>
-            <Switch checked={repair} onCheckedChange={setRepair} />
+            <Switch disabled checked={repair} onCheckedChange={setRepair} />
           </label>
 
           <Field label="Styles">
@@ -136,9 +139,10 @@ function CaptionsStage() {
                 <button
                   key={s.id}
                   type="button"
+                  disabled
                   onClick={() => toggleStyle(s.id)}
                   className={cn(
-                    "rounded-full border px-3 py-1 text-xs transition",
+                    "rounded-full border px-3 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-70",
                     styles.includes(s.id)
                       ? "border-foreground bg-foreground text-background"
                       : "border-white/10 bg-background text-muted-foreground hover:border-white/20",

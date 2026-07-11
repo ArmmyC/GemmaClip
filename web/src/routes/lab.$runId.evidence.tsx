@@ -80,7 +80,7 @@ function EvidenceStage() {
       <div className="grid gap-6 lg:grid-cols-[1fr_1.7fr]">
         <ConfigSection
           title="Evidence config"
-          description="No secrets, API keys, or hidden chain-of-thought are ever surfaced here."
+          description="Inspect the route settings used by this run. No secrets, API keys, or hidden chain-of-thought are surfaced."
           actions={
             <Button size="sm" className="gap-1.5" onClick={apply} disabled title="Interactive reruns coming in the next integration phase">
               {busy ? <RotateCw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
@@ -88,20 +88,23 @@ function EvidenceStage() {
             </Button>
           }
         >
-          <RadioGroup value={route} onValueChange={(v) => setRoute(v as ModelRoute)} className="grid gap-2">
+          <p className="rounded-md border border-white/10 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+            Configuration preview. Running a new evidence pass is not available for this run yet.
+          </p>
+          <RadioGroup disabled value={route} onValueChange={(v) => setRoute(v as ModelRoute)} className="grid gap-2">
             {ROUTES.map((r) => (
               <label
                 key={r.id}
                 htmlFor={`r-${r.id}`}
-                className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition ${
+                className={`flex items-start gap-3 rounded-lg border p-3 transition ${
                   route === r.id
                     ? "border-ember bg-ember-soft"
-                    : "border-white/10 bg-background hover:border-white/20"
+                    : "border-white/10 bg-background"
                 }`}
               >
-                <RadioGroupItem id={`r-${r.id}`} value={r.id} className="mt-0.5" />
+                <RadioGroupItem disabled id={`r-${r.id}`} value={r.id} className="mt-0.5" />
                 <div>
-                  <Label htmlFor={`r-${r.id}`} className="cursor-pointer font-medium">
+                  <Label htmlFor={`r-${r.id}`} className="font-medium">
                     {r.label}
                   </Label>
                   <p className="mt-0.5 text-xs text-muted-foreground">{r.note}</p>
@@ -111,10 +114,10 @@ function EvidenceStage() {
           </RadioGroup>
 
           <Field label="Evidence temperature" hint={<span className="font-mono">{temp.toFixed(2)}</span>}>
-            <Slider value={[temp]} onValueChange={([v]) => setTemp(v)} min={0} max={1} step={0.05} />
+            <Slider disabled value={[temp]} onValueChange={([v]) => setTemp(v)} min={0} max={1} step={0.05} />
           </Field>
           <Field label="Max tokens" hint={<span className="font-mono">{maxTokens}</span>}>
-            <Slider value={[maxTokens]} onValueChange={([v]) => setMaxTokens(v)} min={256} max={4096} step={64} />
+            <Slider disabled value={[maxTokens]} onValueChange={([v]) => setMaxTokens(v)} min={256} max={4096} step={64} />
           </Field>
           <Field label="Provider">
             <code className="rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">

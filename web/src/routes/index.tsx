@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { ArrowRight, AudioLines, Braces, Check, Clapperboard, Layers3 } from "lucide-react";
+import { ArrowRight, AudioLines, Braces, Clapperboard, Layers3 } from "lucide-react";
 import { AppHeader } from "@/components/AppHeader";
 import { UploadDropzone } from "@/components/UploadDropzone";
 import { Button } from "@/components/ui/button";
@@ -97,7 +97,7 @@ function Landing() {
         </section>
       </main>
       <footer className="mx-auto flex max-w-[1440px] flex-col gap-3 px-6 py-8 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground sm:flex-row sm:items-center sm:justify-between lg:px-10">
-        <span className="flex items-center gap-2"><Check className="h-3.5 w-3.5 text-success" /> backend pipeline connected</span>
+        <span>backend-powered pipeline</span>
         <span>media stays in configured run storage</span>
       </footer>
     </div>
