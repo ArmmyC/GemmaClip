@@ -12,12 +12,12 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Play, RotateCw } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { runKey } from "@/lib/hooks";
-import type { ModelRoute } from "@/lib/types";
-import { ProcessingState } from "@/components/StateViews";
+import type { EvidenceRequest, ModelRoute } from "@/lib/types";
+import { ProcessingState, StageErrorState, StaleStageNotice } from "@/components/StateViews";
 
 export const Route = createFileRoute("/lab/$runId/evidence")({
   component: EvidenceStage,
@@ -39,22 +39,47 @@ function EvidenceStage() {
   const [showPrompt, setShowPrompt] = useState(run?.evidence.config.showPromptStructure ?? false);
   const [showRaw, setShowRaw] = useState(run?.evidence.config.showRawJson ?? false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!run) return;
+    setRoute(run.evidence.config.route); setTemp(run.evidence.config.temperature); setMaxTokens(run.evidence.config.maxTokens);
+    setShowPrompt(run.evidence.config.showPromptStructure); setShowRaw(run.evidence.config.showRawJson);
+  }, [run]);
 
-  if (!run || run.stages.evidence !== "complete") return <ProcessingState />;
-  const ev = run.evidence.result;
+  if (!run) return <ProcessingState />;
+  if (run.stages.evidence === "active") return <ProcessingState description={run.progressMessage ?? "Building grounded evidence."} />;
+  if (run.stages.evidence === "error") return <StageErrorState stage="Evidence" description={run.stageErrors?.evidence ?? run.error ?? undefined} onRetry={() => apply()} />;
+  const ev = {
+    ...run.evidence.result,
+    scene: run.evidence.result.scene ?? "",
+    subjects: run.evidence.result.subjects ?? [],
+    actions: run.evidence.result.actions ?? [],
+    setting: run.evidence.result.setting ?? "",
+    visibleObjects: run.evidence.result.visibleObjects ?? [],
+    mood: run.evidence.result.mood ?? "",
+    cameraNotes: run.evidence.result.cameraNotes ?? "",
+    temporalProgression: run.evidence.result.temporalProgression ?? [],
+    verifiedDescription: run.evidence.result.verifiedDescription ?? "",
+    possibleMisreads: run.evidence.result.possibleMisreads ?? [],
+    unsupportedClaims: run.evidence.result.unsupportedClaims ?? [],
+    styleHooks: run.evidence.result.styleHooks ?? [],
+    audio: run.evidence.result.audio ?? { status: "unavailable" as const, speechPresent: false, language: null, transcript: null, visualConsistency: "unknown" as const, captionSafeFacts: [] },
+  };
+  const hasEvidence = Boolean(run.evidence.result.audio);
+  const draft: EvidenceRequest = { route, temperature: temp, maxTokens, provider: run.evidence.config.provider, showPromptStructure: showPrompt, showRawJson: showRaw };
+  const dirty = route !== run.evidence.config.route || temp !== run.evidence.config.temperature || maxTokens !== run.evidence.config.maxTokens;
 
   async function apply() {
     setBusy(true);
-    const updated = await api.postEvidence(runId, {
-      route,
-      temperature: temp,
-      maxTokens,
-      provider: run!.evidence.config.provider,
-      showPromptStructure: showPrompt,
-      showRawJson: showRaw,
-    });
-    qc.setQueryData(runKey(runId), updated);
-    setBusy(false);
+    setError(null); setNotice(null);
+    try {
+      const updated = await api.postEvidence(runId, draft);
+      qc.setQueryData(runKey(runId), updated);
+      setNotice("Evidence updated. Captions and Compare require regeneration.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Evidence generation failed safely.");
+    } finally { setBusy(false); }
   }
 
   return (
@@ -64,9 +89,12 @@ function EvidenceStage() {
         title="Ground the model in what's actually there"
         description="Structured evidence separates what Gemma verified from what it might have misread. Captions can only reference this object."
       />
+      {run.stages.evidence === "invalidated" && <StaleStageNotice />}
+      {notice && <div className="mb-4 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-sm text-success" role="status">{notice}</div>}
+      {error && <div className="mb-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger" role="alert">{error}</div>}
 
       <div className="mb-6">
-        <RouteDecision
+        {hasEvidence ? <RouteDecision
           selected={ev.selectedRoute}
           reason={ev.routeReason}
           auto={route === "auto"}
@@ -74,24 +102,27 @@ function EvidenceStage() {
           provider={ev.routeProvider}
           modality={ev.routeModality}
           audioFallbackOccurred={ev.audioFallbackOccurred}
-        />
+        /> : <div className="rounded-lg border border-white/10 bg-card/50 px-4 py-3 text-sm text-muted-foreground">Evidence has not been built for this run yet. Configure the route and build evidence to see provenance.</div>}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_1.7fr]">
         <ConfigSection
           title="Evidence config"
-          description="Inspect the route settings used by this run. No secrets, API keys, or hidden chain-of-thought are surfaced."
+          description="Choose the Gemma evidence route. No secrets, API keys, or hidden chain-of-thought are surfaced."
           actions={
-            <Button size="sm" className="gap-1.5" onClick={apply} disabled title="Interactive reruns coming in the next integration phase">
+            <div className="flex gap-2">
+              <Button variant="ghost" size="sm" onClick={() => { setRoute(run.evidence.config.route); setTemp(run.evidence.config.temperature); setMaxTokens(run.evidence.config.maxTokens); }} disabled={busy || !dirty}>Reset</Button>
+              <Button size="sm" className="gap-1.5" onClick={apply} disabled={busy || run.stages.frames !== "complete" || (!dirty && run.stages.evidence === "complete")}>
               {busy ? <RotateCw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-              Run evidence
-            </Button>
+              Build Evidence
+              </Button>
+            </div>
           }
         >
           <p className="rounded-md border border-white/10 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
-            Configuration preview. Running a new evidence pass is not available for this run yet.
+            {dirty ? "Unsaved configuration. Captions and Compare will be invalidated." : "Stored configuration. Adjust the route or temperature, then build evidence."}
           </p>
-          <RadioGroup disabled value={route} onValueChange={(v) => setRoute(v as ModelRoute)} className="grid gap-2">
+          <RadioGroup value={route} onValueChange={(v) => setRoute(v as ModelRoute)} className="grid gap-2">
             {ROUTES.map((r) => (
               <label
                 key={r.id}
@@ -99,12 +130,12 @@ function EvidenceStage() {
                 className={`flex items-start gap-3 rounded-lg border p-3 transition ${
                   route === r.id
                     ? "border-ember bg-ember-soft"
-                    : "border-white/10 bg-background"
+                    : "border-white/10 bg-background hover:border-white/20"
                 }`}
               >
-                <RadioGroupItem disabled id={`r-${r.id}`} value={r.id} className="mt-0.5" />
+                <RadioGroupItem id={`r-${r.id}`} value={r.id} className="mt-0.5" />
                 <div>
-                  <Label htmlFor={`r-${r.id}`} className="font-medium">
+                  <Label htmlFor={`r-${r.id}`} className="cursor-pointer font-medium">
                     {r.label}
                   </Label>
                   <p className="mt-0.5 text-xs text-muted-foreground">{r.note}</p>
@@ -114,10 +145,10 @@ function EvidenceStage() {
           </RadioGroup>
 
           <Field label="Evidence temperature" hint={<span className="font-mono">{temp.toFixed(2)}</span>}>
-            <Slider disabled value={[temp]} onValueChange={([v]) => setTemp(v)} min={0} max={1} step={0.05} />
+            <Slider value={[temp]} onValueChange={([v]) => setTemp(v)} min={0} max={1} step={0.05} />
           </Field>
           <Field label="Max tokens" hint={<span className="font-mono">{maxTokens}</span>}>
-            <Slider disabled value={[maxTokens]} onValueChange={([v]) => setMaxTokens(v)} min={256} max={4096} step={64} />
+            <Slider value={[maxTokens]} onValueChange={([v]) => setMaxTokens(v)} min={256} max={4096} step={64} />
           </Field>
           <Field label="Provider">
             <code className="rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">

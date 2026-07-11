@@ -33,6 +33,14 @@ Vite proxies `/api` to `http://127.0.0.1:8000`. Production builds use `npm run b
 
 The production client does not silently fall back to mock data. The preserved `lovable/` directory remains the design snapshot.
 
+Gemma Lab now supports a manual stage flow in addition to Quick Caption. `/lab` creates a run, probes metadata, and waits for the user to run Frames, Audio, Evidence, and Captions individually. Each stage persists its configuration and artifact through the API, invalidates only its downstream dependents, and exposes a recoverable stage error. `Save Experiment` stores an immutable snapshot; Compare reads two real snapshots from the same run.
+
+Manual stage endpoints are `POST /api/runs/{run_id}/metadata`, `POST /api/runs/{run_id}/frames`, `PATCH /api/runs/{run_id}/frames/selection`, `POST /api/runs/{run_id}/audio`, `POST /api/runs/{run_id}/evidence`, `POST /api/runs/{run_id}/captions`, `POST /api/runs/{run_id}/experiments`, and `GET /api/runs/{run_id}/compare?left={experiment_id}&right={experiment_id}`.
+
+Audio supports the MVP's highest-energy and first-window (first-N-seconds) selectors. Custom waveform ranges remain intentionally unavailable until a persisted range model is added.
+
+Stage jobs use a single in-memory run lock. Only one job may mutate a run at a time, conflicting requests return `409`, active runs cannot be deleted, and interrupted processing is recovered as a safe error on restart. This remains intentionally single-process for the demo; use an external queue and shared lock before production deployment.
+
 Each run stores its upload, six selected frames, sanitized evidence, and captions below a server-generated run ID. Generated media is ignored by Git and never stored under frontend static assets.
 
 Runs expose one generation outcome:
@@ -49,7 +57,7 @@ Evidence results report the actual safe provider, model, and modality plus wheth
 
 ## Current scope
 
-The working slice is upload → metadata → existing hybrid extraction → existing routed Gemma pipeline → Quick results → inspection of that same run in Gemma Lab. Interactive Lab reruns and experiment comparison are visibly disabled until persistent stage APIs exist. Temporary audio is cleaned by the existing pipeline, so the Audio page truthfully reports that no playable artifact is available.
+The working slice supports both `upload → metadata → manual Frames → manual Audio → manual Evidence → manual Captions → immutable experiments → Compare` and the original Quick Caption automatic flow. Both flows call the same Python stage services. Temporary audio candidates are removed after Audio inspection and Evidence generation; the Audio page exposes safe metadata and waveform data but does not retain a playable private artifact.
 
 ## Verification
 

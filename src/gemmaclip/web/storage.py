@@ -104,6 +104,7 @@ class RunStorage:
             raise RunNotFound("Run not found.") from exc
         if not isinstance(payload, dict):
             raise StorageError("Stored run metadata is invalid.")
+        _ensure_run_shape(payload)
         return payload
 
     def public_run(self, run: Mapping[str, Any]) -> dict[str, Any]:
@@ -238,13 +239,31 @@ def _initial_run(run_id: str, filename: str, content_type: str) -> dict[str, Any
         "evidence": {"config": {"route": "auto", "temperature": 0.0, "maxTokens": 2048, "provider": "automatic", "showPromptStructure": False, "showRawJson": True}, "result": {}},
         "captions": {"config": {"model": "gemma-4-31b", "temperature": 0.4, "minWords": 18, "maxWords": 35, "strictGrounding": True, "audioEvidenceMode": "use-if-present", "focusedRepair": True, "styles": ["formal", "sarcastic", "humorous-tech", "humorous-non-tech"]}, "results": []},
         "experiments": [],
-        "stages": {"video": "complete", "frames": "waiting", "audio": "waiting", "evidence": "waiting", "captions": "waiting", "compare": "waiting"},
+        "stages": {"video": "waiting", "frames": "waiting", "audio": "waiting", "evidence": "waiting", "captions": "waiting", "compare": "waiting"},
         "activeStage": "video",
         "progressMessage": "Video uploaded",
         "error": None,
         "generationOutcome": None,
         "degraded": False,
+        "mode": "manual",
+        "runtimes": {"video": 0.0, "frames": 0.0, "audio": 0.0, "evidence": 0.0, "captions": 0.0, "compare": 0.0},
+        "stageErrors": {},
     }
+
+
+def _ensure_run_shape(run: dict[str, Any]) -> None:
+    """Supply safe defaults for runs written before interactive Lab support."""
+    run.setdefault("mode", "quick")
+    run.setdefault("runtimes", {stage: 0.0 for stage in ("video", "frames", "audio", "evidence", "captions", "compare")})
+    run.setdefault("stageErrors", {})
+    run.setdefault("activeStage", None)
+    run.setdefault("progressMessage", None)
+    run.setdefault("error", None)
+    run.setdefault("generationOutcome", None)
+    run.setdefault("degraded", False)
+    stages = run.setdefault("stages", {})
+    for stage in ("video", "frames", "audio", "evidence", "captions", "compare"):
+        stages.setdefault(stage, "waiting")
 
 
 def _positive_int(value: str | None, default: int) -> int:

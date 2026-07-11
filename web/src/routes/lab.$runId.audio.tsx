@@ -10,12 +10,12 @@ import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Play, RotateCw, Volume2, VolumeX, Info } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { runKey } from "@/lib/hooks";
-import type { AudioMode, AudioConfig } from "@/lib/types";
-import { ProcessingState } from "@/components/StateViews";
+import type { AudioMode, AudioConfig, AudioRequest } from "@/lib/types";
+import { ProcessingState, StageErrorState, StaleStageNotice } from "@/components/StateViews";
 
 export const Route = createFileRoute("/lab/$runId/audio")({
   component: AudioStage,
@@ -39,20 +39,30 @@ function AudioStage() {
     run?.audio.config.strategy ?? "highest-energy",
   );
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!run) return;
+    setMode(run.audio.config.mode); setMaxDur(run.audio.config.maxDurationSec); setRate(String(run.audio.config.sampleRateHz));
+    setMinRms(run.audio.config.minRmsEnergy); setStrategy(run.audio.config.strategy);
+  }, [run]);
 
-  if (!run || run.stages.audio !== "complete") return <ProcessingState />;
+  if (!run) return <ProcessingState />;
+  if (run.stages.audio === "active") return <ProcessingState description={run.progressMessage ?? "Checking audio."} />;
+  if (run.stages.audio === "error") return <StageErrorState stage="Audio" description={run.stageErrors?.audio ?? run.error ?? undefined} onRetry={() => apply()} />;
+  const draft: AudioRequest = { mode, maxDurationSec: maxDur, sampleRateHz: Number(rate), minRmsEnergy: minRms, strategy };
+  const dirty = JSON.stringify(draft) !== JSON.stringify(run.audio.config);
 
   async function apply() {
     setBusy(true);
-    const updated = await api.postAudio(runId, {
-      mode,
-      maxDurationSec: maxDur,
-      sampleRateHz: Number(rate),
-      minRmsEnergy: minRms,
-      strategy,
-    });
-    qc.setQueryData(runKey(runId), updated);
-    setBusy(false);
+    setError(null); setNotice(null);
+    try {
+      const updated = await api.postAudio(runId, draft);
+      qc.setQueryData(runKey(runId), updated);
+      setNotice("Audio analyzed. Evidence, Captions, and Compare require regeneration.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Audio analysis failed safely.");
+    } finally { setBusy(false); }
   }
 
   return (
@@ -62,6 +72,9 @@ function AudioStage() {
         title="Find a useful listening window"
         description="Audio energy helps select a candidate segment. Gemma decides whether it actually contains speech or useful evidence."
       />
+      {run.stages.audio === "invalidated" && <StaleStageNotice />}
+      {notice && <div className="mb-4 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-sm text-success" role="status">{notice}</div>}
+      {error && <div className="mb-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger" role="alert">{error}</div>}
 
       <div className="mb-6 flex items-start gap-3 rounded-xl border border-lab/30 bg-lab-soft/50 p-4 text-sm">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-lab" />
@@ -74,18 +87,21 @@ function AudioStage() {
       <div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
         <ConfigSection
           title="Audio configuration"
-          description="Inspect the audio settings used by this run."
+          description="Choose how GemmaClip inspects a bounded energy candidate."
           actions={
-            <Button size="sm" className="gap-1.5" onClick={apply} disabled title="Interactive reruns coming in the next integration phase">
+            <div className="flex gap-2">
+              <Button variant="ghost" size="sm" onClick={() => { setMode(run.audio.config.mode); setMaxDur(run.audio.config.maxDurationSec); setRate(String(run.audio.config.sampleRateHz)); setMinRms(run.audio.config.minRmsEnergy); setStrategy(run.audio.config.strategy); }} disabled={busy || !dirty}>Reset</Button>
+              <Button size="sm" className="gap-1.5" onClick={apply} disabled={busy || run.stages.video !== "complete" || (!dirty && run.stages.audio === "complete")}>
               {busy ? <RotateCw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-              Apply
-            </Button>
+              Analyze Audio
+              </Button>
+            </div>
           }
         >
           <p className="rounded-md border border-white/10 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
-            Configuration preview. Applying new audio settings is not available for this run yet.
+            {dirty ? "Unsaved configuration. Evidence, Captions, and Compare will be invalidated." : "Stored configuration. Adjust a setting, then analyze audio."}
           </p>
-          <RadioGroup disabled value={mode} onValueChange={(v) => setMode(v as AudioMode)} className="grid gap-2">
+          <RadioGroup value={mode} onValueChange={(v) => setMode(v as AudioMode)} className="grid gap-2">
             {MODES.map((m) => (
               <label
                 key={m.id}
@@ -93,12 +109,12 @@ function AudioStage() {
                 className={`flex items-start gap-3 rounded-lg border p-3 transition ${
                   mode === m.id
                     ? "border-ember bg-ember-soft"
-                    : "border-white/10 bg-background"
+                    : "border-white/10 bg-background hover:border-white/20"
                 }`}
               >
-                <RadioGroupItem disabled id={`am-${m.id}`} value={m.id} className="mt-0.5" />
+                <RadioGroupItem id={`am-${m.id}`} value={m.id} className="mt-0.5" />
                 <div>
-                  <Label htmlFor={`am-${m.id}`} className="font-medium">{m.label}</Label>
+                  <Label htmlFor={`am-${m.id}`} className="cursor-pointer font-medium">{m.label}</Label>
                   <p className="mt-0.5 text-xs text-muted-foreground">{m.note}</p>
                 </div>
               </label>
@@ -106,11 +122,11 @@ function AudioStage() {
           </RadioGroup>
 
           <Field label="Max analysis duration" hint={<span className="font-mono">{maxDur}s</span>}>
-            <Slider disabled value={[maxDur]} onValueChange={([v]) => setMaxDur(v)} min={1} max={30} step={1} />
+            <Slider value={[maxDur]} onValueChange={([v]) => setMaxDur(v)} min={1} max={30} step={1} />
           </Field>
           <Field label="Sample rate">
             <Select value={rate} onValueChange={setRate}>
-              <SelectTrigger disabled><SelectValue /></SelectTrigger>
+              <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="8000">8 kHz</SelectItem>
                 <SelectItem value="16000">16 kHz</SelectItem>
@@ -120,15 +136,14 @@ function AudioStage() {
             </Select>
           </Field>
           <Field label="Min RMS energy" hint={<span className="font-mono">{minRms.toFixed(3)}</span>}>
-            <Slider disabled value={[minRms]} onValueChange={([v]) => setMinRms(v)} min={0.001} max={0.2} step={0.001} />
+            <Slider value={[minRms]} onValueChange={([v]) => setMinRms(v)} min={0.001} max={0.2} step={0.001} />
           </Field>
           <Field label="Selection strategy">
             <Select value={strategy} onValueChange={(v) => setStrategy(v as AudioConfig["strategy"])}>
-              <SelectTrigger disabled><SelectValue /></SelectTrigger>
+              <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="highest-energy">Highest energy window</SelectItem>
-                <SelectItem value="first-non-silent">First non-silent window</SelectItem>
-                <SelectItem value="custom-range">Custom range</SelectItem>
+                 <SelectItem value="highest-energy">Highest energy window</SelectItem>
+                 <SelectItem value="first-non-silent">First window (first N seconds)</SelectItem>
               </SelectContent>
             </Select>
           </Field>

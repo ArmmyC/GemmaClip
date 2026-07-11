@@ -1,4 +1,14 @@
-import type { ProcessingPreset, Run, RunStatusResponse } from "./types";
+import type {
+  AudioRequest,
+  CaptionRequest,
+  Experiment,
+  EvidenceRequest,
+  FrameRequest,
+  FrameSelectionRequest,
+  ProcessingPreset,
+  Run,
+  RunStatusResponse,
+} from "./types";
 
 const backendStyles = { formal: "formal", sarcastic: "sarcastic", "humorous-tech": "humorous_tech", "humorous-non-tech": "humorous_non_tech" } as const;
 export const toBackendStyle = (style: keyof typeof backendStyles) => backendStyles[style];
@@ -18,21 +28,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
 
+function jsonInit(method: "POST" | "PATCH", body: object): RequestInit {
+  return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+}
+
 export const mediaUrl = (runId: string) => `${base}/api/runs/${encodeURIComponent(runId)}/media/video`;
 export const labPath = (runId: string) => `/lab/${encodeURIComponent(runId)}/video`;
+
+export interface ExperimentComparison {
+  left: Experiment;
+  right: Experiment;
+  differences: Record<string, { left: unknown; right: unknown }>;
+}
 
 export const api = {
   async createRun(file: File): Promise<Run> { const body = new FormData(); body.append("video", file); return request("/api/runs", { method: "POST", body }); },
   getRun: (id: string) => request<Run>(`/api/runs/${encodeURIComponent(id)}`),
   deleteRun: (id: string) => request<void>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  postMetadata: (id: string, preset: ProcessingPreset) => request<Run>(`/api/runs/${encodeURIComponent(id)}/metadata`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preset }) }),
+  postMetadata: (id: string, preset: ProcessingPreset) => request<Run>(`/api/runs/${encodeURIComponent(id)}/metadata`, jsonInit("POST", { preset })),
   startQuickCaption: (id: string) => request<Run>(`/api/runs/${encodeURIComponent(id)}/quick-caption`, { method: "POST" }),
   getStatus: (id: string) => request<RunStatusResponse>(`/api/runs/${encodeURIComponent(id)}/status`),
-  postFrames: (_id: string, _config: unknown): Promise<Run> => Promise.reject(new ApiError("Interactive reruns are coming in the next integration phase.", 501)),
-  postAudio: (_id: string, _config: unknown): Promise<Run> => Promise.reject(new ApiError("Interactive reruns are coming in the next integration phase.", 501)),
-  postEvidence: (_id: string, _config: unknown): Promise<Run> => Promise.reject(new ApiError("Interactive reruns are coming in the next integration phase.", 501)),
-  postCaptions: (_id: string, _config: unknown): Promise<Run> => Promise.reject(new ApiError("Interactive reruns are coming in the next integration phase.", 501)),
-  postExperiment: (_id: string, _config: unknown): Promise<Run> => Promise.reject(new ApiError("Experiment storage is coming in the next integration phase.", 501)),
+  postFrames: (id: string, config: FrameRequest) => request<Run>(`/api/runs/${encodeURIComponent(id)}/frames`, jsonInit("POST", config)),
+  postFrameSelection: (id: string, config: FrameSelectionRequest) => request<Run>(`/api/runs/${encodeURIComponent(id)}/frames/selection`, jsonInit("PATCH", config)),
+  postAudio: (id: string, config: AudioRequest) => request<Run>(`/api/runs/${encodeURIComponent(id)}/audio`, jsonInit("POST", config)),
+  postEvidence: (id: string, config: EvidenceRequest) => request<Run>(`/api/runs/${encodeURIComponent(id)}/evidence`, jsonInit("POST", config)),
+  postCaptions: (id: string, config: CaptionRequest) => request<Run>(`/api/runs/${encodeURIComponent(id)}/captions`, jsonInit("POST", config)),
+  postExperiment: (id: string, config: { label?: string; captionStyle: string }) => request<Run>(`/api/runs/${encodeURIComponent(id)}/experiments`, jsonInit("POST", config)),
+  compareExperiments: (id: string, left: string, right: string) => request<ExperimentComparison>(`/api/runs/${encodeURIComponent(id)}/compare?left=${encodeURIComponent(left)}&right=${encodeURIComponent(right)}`),
 };
 
 export async function createAndStartQuickRun(file: File): Promise<Run> {
@@ -44,6 +66,16 @@ export async function createAndStartQuickRun(file: File): Promise<Run> {
     throw error;
   }
   return created;
+}
+
+export async function createAndProbeManualRun(file: File, preset: ProcessingPreset = "balanced"): Promise<Run> {
+  const created = await api.createRun(file);
+  try {
+    return await api.postMetadata(created.id, preset);
+  } catch (error) {
+    await api.deleteRun(created.id).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function waitForRun(id: string, options: { intervalMs?: number; signal?: AbortSignal; onStatus?: (s: RunStatusResponse) => void } = {}): Promise<Run> {

@@ -69,3 +69,29 @@ export function ErrorState({
     </div>
   );
 }
+
+export function StageErrorState({
+  stage,
+  description,
+  onRetry,
+}: {
+  stage: string;
+  description?: ReactNode;
+  onRetry?: () => void;
+}) {
+  return (
+    <ErrorState
+      title={`${stage} stage failed`}
+      description={description ?? "This stage did not complete. Upstream artifacts remain available."}
+      action={onRetry ? <button type="button" className="min-h-11 rounded-md border border-white/15 px-4 text-sm hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember" onClick={onRetry}>Retry {stage}</button> : undefined}
+    />
+  );
+}
+
+export function StaleStageNotice({
+  message = "This artifact is stale because an upstream setting changed. Run this stage again to refresh it.",
+}: {
+  message?: string;
+}) {
+  return <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-warning" role="status">{message}</div>;
+}

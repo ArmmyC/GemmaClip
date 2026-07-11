@@ -11,6 +11,7 @@ from gemmaclip.audio import (
     cleanup_audio_candidate,
     has_audio_stream,
     load_audio_settings,
+    AudioSettings,
     pcm_rms,
     prepare_audio_candidate,
     select_highest_energy_window,
@@ -121,3 +122,26 @@ def test_prepare_audio_candidate_extracts_selected_window_and_cleans_full_wav(tm
     assert candidate.path and candidate.path.exists()
     assert not (tmp_path / "audio" / "audio_full.wav").exists()
     assert "-ar" in commands[-1] and "100" in commands[-1]
+
+
+def test_prepare_audio_candidate_supports_first_window_strategy(tmp_path):
+    settings = AudioSettings(mode="auto", max_seconds=2, sample_rate=100, strategy="first-non-silent")
+    commands = []
+
+    def runner(command, **kwargs):
+        commands.append(command)
+        if command[0] == "ffprobe":
+            return SimpleNamespace(stdout='{"streams": [{"index": 1}]}', stderr="")
+        output = Path(command[-1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(output), "wb") as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(100)
+            samples = [12_000] * 200
+            wav.writeframes(b"".join(int(sample).to_bytes(2, "little", signed=True) for sample in samples))
+        return SimpleNamespace(stdout="", stderr="")
+
+    candidate = prepare_audio_candidate(tmp_path / "video.mp4", tmp_path / "audio", settings=settings, runner=runner)
+    assert candidate.start_seconds == 0.0
+    assert candidate.duration_seconds == 2.0
+    assert candidate.reason == "first window selected"
+    cleanup_audio_candidate(candidate)

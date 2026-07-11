@@ -40,6 +40,19 @@ export interface FrameConfig {
   changeSensitivity: number; // 0..1
 }
 
+export interface FrameRequest {
+  method: FrameMethod;
+  totalFrames: number;
+  anchorCount: number;
+  highChangeCount: number;
+  minSpacingSec: number;
+  changeSensitivity: number;
+}
+
+export interface FrameSelectionRequest {
+  includedFrameIds: string[];
+}
+
 export interface Frame {
   id: string;
   index: number;
@@ -67,6 +80,14 @@ export interface AudioConfig {
   customEndSec?: number;
 }
 
+export interface AudioRequest {
+  mode: AudioMode;
+  maxDurationSec: number;
+  sampleRateHz: number;
+  minRmsEnergy: number;
+  strategy: AudioConfig["strategy"];
+}
+
 export interface AudioSegment {
   startSec: number;
   endSec: number;
@@ -92,6 +113,15 @@ export interface EvidenceConfig {
   provider: string;
   showPromptStructure: boolean;
   showRawJson: boolean;
+}
+
+export interface EvidenceRequest {
+  route: ModelRoute;
+  temperature: number;
+  maxTokens: number;
+  provider?: string;
+  showPromptStructure?: boolean;
+  showRawJson?: boolean;
 }
 
 export interface StructuredEvidence {
@@ -142,6 +172,16 @@ export interface CaptionConfig {
   styles: CaptionStyle[];
 }
 
+export interface CaptionRequest {
+  temperature: number;
+  minWords: number;
+  maxWords: number;
+  strictGrounding: boolean;
+  audioEvidenceMode: CaptionConfig["audioEvidenceMode"];
+  focusedRepair: boolean;
+  styles: CaptionStyle[];
+}
+
 export interface Caption {
   id: string;
   style: CaptionStyle;
@@ -160,15 +200,25 @@ export type GenerationOutcome = "model_generated" | "evidence_fallback" | "deter
 export interface Experiment {
   id: string;
   label: string;
+  createdAt?: string;
   frameMethod: FrameMethod;
   frameCount: number;
+  includedFrameIds?: string[];
   timestamps: number[];
   audioMode: AudioMode;
+  audioStatus?: AudioSegment["status"];
+  evidenceRoute?: string;
+  evidenceProvider?: string;
+  evidenceModality?: "visual" | "audio_visual";
+  evidenceFallbackOccurred?: boolean;
   evidenceModel: Exclude<ModelRoute, "auto">;
+  evidenceTemperature?: number;
   captionTemperature: number;
   runtimeMs: number;
   caption: string;
   style: CaptionStyle;
+  generationOutcome?: GenerationOutcome | null;
+  degraded?: boolean;
 }
 
 export interface Run {
@@ -183,6 +233,9 @@ export interface Run {
   captions: { config: CaptionConfig; results: Caption[] };
   experiments: Experiment[];
   stages: Record<StageId, StageState>;
+  mode?: "manual" | "quick";
+  runtimes?: Partial<Record<StageId, number>>;
+  stageErrors?: Partial<Record<StageId, string>>;
   activeStage?: StageId | null;
   progressMessage?: string | null;
   error?: string | null;
@@ -196,6 +249,7 @@ export interface RunStatusResponse {
   activeStage?: StageId | null;
   progressMessage?: string | null;
   stages: Record<StageId, StageState>;
+  runtimes?: Partial<Record<StageId, number>>;
   error?: string | null;
   generationOutcome: GenerationOutcome | null;
   degraded: boolean;

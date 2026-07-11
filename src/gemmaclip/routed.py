@@ -87,6 +87,122 @@ def decide_evidence_route(settings: AudioSettings, audio: AudioEvidenceCandidate
     return RouteDecision("visual", False, audio.reason)
 
 
+def generate_routed_evidence(
+    task_id: str,
+    frames: Sequence[ExtractedFrame],
+    audio: AudioEvidenceCandidate,
+    decision: RouteDecision,
+    *,
+    config: RoutedGemmaConfig,
+    client_factory: Callable[[Any], Any],
+    remaining_time_fn: Callable[[], float],
+    temperature: float = DEFAULT_EVIDENCE_TEMPERATURE,
+    logger: logging.Logger | None = None,
+) -> tuple[dict[str, Any], EvidenceExecution]:
+    """Run one validated evidence stage for the interactive Lab.
+
+    The provider-attempt loop is shared with the competition routed pipeline;
+    this wrapper only makes the evidence half available without also writing
+    captions.  Audio candidates are owned by the caller and are never retained
+    by this function.
+    """
+    return _generate_validated_evidence(
+        task_id,
+        frames,
+        audio,
+        decision,
+        config,
+        client_factory,
+        temperature=temperature,
+        logger=logger or LOGGER,
+        remaining_time_fn=remaining_time_fn,
+    )
+
+
+def generate_routed_captions_from_evidence(
+    task: Task,
+    frames: Sequence[ExtractedFrame],
+    evidence: Mapping[str, Any],
+    *,
+    config: RoutedGemmaConfig,
+    client_factory: Callable[[Any], Any],
+    remaining_time_fn: Callable[[], float],
+    temperature: float = DEFAULT_CAPTION_TEMPERATURE,
+    repair_temperature: float = DEFAULT_REPAIR_TEMPERATURE,
+    logger: logging.Logger | None = None,
+    outcome_callback: Callable[[GenerationOutcome], None] | None = None,
+) -> dict[str, str]:
+    """Synthesize captions from persisted evidence without rerunning upstream stages."""
+    from gemmaclip.captioner import build_evidence_based_captions, cleanup_caption
+
+    active_logger = logger or LOGGER
+    audio = unavailable_audio(16_000, "using persisted evidence")
+    audio_raw = evidence.get("audio") if isinstance(evidence.get("audio"), Mapping) else {}
+    audio_selected = bool(audio_raw.get("available"))
+    try:
+        captions = _call_caption_with_fallback(
+            task.task_id,
+            task.styles,
+            evidence,
+            config,
+            client_factory,
+            lambda provider, missing: build_final_caption_messages(
+                Task(task.task_id, task.video_url, tuple(missing)),
+                frames,
+                evidence,
+                google=provider == DEFAULT_PROVIDER_GOOGLE,
+            ),
+            temperature=temperature,
+            logger=active_logger,
+            remaining_time_fn=remaining_time_fn,
+            minimum_remaining_seconds=FINAL_SYNTHESIS_MIN_SECONDS,
+            operation="caption",
+            route="caption",
+            audio=audio,
+            audio_selected=audio_selected,
+        )
+    except RoutedRuntimeBudgetError:
+        captions = build_evidence_based_captions(task.styles, evidence)
+        return _return_with_outcome(captions, outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
+    except Exception:
+        captions = build_evidence_based_captions(task.styles, evidence)
+        return _return_with_outcome(captions, outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
+
+    model_generated_styles = set(captions)
+    missing_styles = [style for style in task.styles if style not in captions]
+    if missing_styles and remaining_time_fn() >= FOCUSED_REPAIR_MIN_SECONDS:
+        try:
+            repaired = _call_caption_with_fallback(
+                task.task_id,
+                missing_styles,
+                evidence,
+                config,
+                client_factory,
+                lambda provider, missing: build_focused_repair_messages(
+                    task, missing, captions, frames, evidence,
+                    google=provider == DEFAULT_PROVIDER_GOOGLE,
+                ),
+                temperature=repair_temperature,
+                logger=active_logger,
+                remaining_time_fn=remaining_time_fn,
+                minimum_remaining_seconds=FOCUSED_REPAIR_MIN_SECONDS,
+                operation="focused_repair",
+                route="caption",
+                audio=audio,
+                audio_selected=audio_selected,
+            )
+            captions.update(repaired)
+            model_generated_styles.update(repaired)
+        except Exception:
+            pass
+    still_missing = [style for style in task.styles if style not in captions]
+    if still_missing:
+        captions.update(build_evidence_based_captions(still_missing, evidence))
+    normalized = {style: cleanup_caption(captions[style], style, dict(evidence)) for style in task.styles}
+    outcome = GENERATION_OUTCOME_MODEL if model_generated_styles else GENERATION_OUTCOME_EVIDENCE_FALLBACK
+    return _return_with_outcome(normalized, outcome_callback, outcome)
+
+
 def generate_routed_captions(
     task: Task,
     frames: Sequence[ExtractedFrame],

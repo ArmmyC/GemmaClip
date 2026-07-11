@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogTrigger, DialogTitle } from "@/components/
 
 interface Props {
   frame: Frame;
-  onToggle?: (id: string, included: boolean) => void;
+  onToggle?: (id: string, included: boolean) => void | Promise<void>;
   className?: string;
 }
 
@@ -20,6 +20,7 @@ function fmtTs(sec: number) {
 
 export function FrameCard({ frame, onToggle, className }: Props) {
   const [included, setIncluded] = useState(frame.included);
+  const [saving, setSaving] = useState(false);
   const reasonBadge =
     frame.reason === "anchor" ? (
       <Badge className="border-ember/40 bg-ember-soft text-ember">anchor</Badge>
@@ -74,10 +75,18 @@ export function FrameCard({ frame, onToggle, className }: Props) {
               include
             </span>
             <Switch
+              disabled={saving}
               checked={included}
-              onCheckedChange={(v) => {
-                setIncluded(v);
-                onToggle(frame.id, v);
+              onCheckedChange={async (v) => {
+                setSaving(true);
+                try {
+                  await onToggle(frame.id, v);
+                  setIncluded(v);
+                } catch {
+                  // The parent reports the sanitized persistence error.
+                } finally {
+                  setSaving(false);
+                }
               }}
             />
           </label>

@@ -24,15 +24,21 @@ function LabLayout() {
             loading run…
           </div>
         )}
-        {error && (
+        {error ? (
           <ErrorState
             title="Could not load run"
             description={String((error as Error).message)}
           />
-        )}
-        <LabRunContent run={run}>
-          <Outlet />
-        </LabRunContent>
+        ) : run?.status === "error" ? (
+          <ErrorState
+            title="Pipeline processing failed"
+            description={run.error ?? "GemmaClip could not complete this run."}
+          />
+        ) : run ? (
+          <LabRunContent run={run}>
+            <Outlet />
+          </LabRunContent>
+        ) : null}
       </main>
       </div>
     </div>

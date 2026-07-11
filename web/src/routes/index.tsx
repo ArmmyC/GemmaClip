@@ -5,6 +5,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { UploadDropzone } from "@/components/UploadDropzone";
 import { Button } from "@/components/ui/button";
 import { startQuickUpload } from "@/lib/quick-flow";
+import { createAndProbeManualRun } from "@/lib/api";
 
 export const Route = createFileRoute("/")({ component: Landing });
 
@@ -35,7 +36,8 @@ function Landing() {
     if (!file) return;
     setBusy(true); setError(null);
     try {
-      await startQuickUpload(file, (id) => navigate({ to: "/lab/$runId/video", params: { runId: id } }));
+      const run = await createAndProbeManualRun(file, "balanced");
+      navigate({ to: "/lab/$runId/video", params: { runId: run.id } });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The Lab run could not be created.");
     } finally { setBusy(false); }

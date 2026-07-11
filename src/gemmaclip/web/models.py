@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
 from gemmaclip.routed import GenerationOutcome
 
 
@@ -31,10 +32,56 @@ class PresetRequest(ApiModel):
     preset: Literal["fast", "balanced", "maximum", "custom"] = "balanced"
 
 
+class FrameRequest(ApiModel):
+    method: Literal["uniform", "aks-lite", "hybrid"] = "hybrid"
+    total_frames: int = Field(default=6, ge=2, le=16)
+    anchor_count: int = Field(default=4, ge=0, le=16)
+    high_change_count: int = Field(default=2, ge=0, le=16)
+    min_spacing_sec: float = Field(default=1.0, gt=0, le=5)
+    change_sensitivity: float = Field(default=0.5, ge=0, le=1)
+
+
+class FrameSelectionRequest(ApiModel):
+    included_frame_ids: list[str] = Field(min_length=2, max_length=16)
+
+
+class AudioRequest(ApiModel):
+    mode: Literal["disabled", "automatic", "always"] = "automatic"
+    max_duration_sec: float = Field(default=30, ge=1, le=30)
+    sample_rate_hz: int = Field(default=16000, gt=0, le=192000)
+    min_rms_energy: float = Field(default=0.01, ge=0, le=1)
+    strategy: Literal["highest-energy", "first-non-silent", "custom-range"] = "highest-energy"
+
+
+class EvidenceRequest(ApiModel):
+    route: Literal["auto", "automatic", "gemma-4-26b-a4b", "gemma-4-12b-unified"] = "auto"
+    temperature: float = Field(default=0.0, ge=0, le=2)
+    max_tokens: int = Field(default=2048, ge=128, le=8192)
+    provider: str = "automatic"
+    show_prompt_structure: bool = False
+    show_raw_json: bool = True
+
+
+class CaptionRequest(ApiModel):
+    temperature: float = Field(default=0.4, ge=0, le=2)
+    min_words: int = Field(default=18, ge=1, le=120)
+    max_words: int = Field(default=35, ge=1, le=120)
+    strict_grounding: bool = True
+    audio_evidence_mode: Literal["ignore", "use-if-present", "require"] = "use-if-present"
+    focused_repair: bool = True
+    styles: list[Literal["formal", "sarcastic", "humorous-tech", "humorous-non-tech"]] = Field(min_length=1, max_length=4)
+
+
+class ExperimentRequest(ApiModel):
+    label: str | None = Field(default=None, max_length=120)
+    caption_style: Literal["formal", "sarcastic", "humorous-tech", "humorous-non-tech"] = "formal"
+
+
 class RunResponse(ApiModel):
     id: str
     created_at: str
     status: Literal["pending", "processing", "ready", "error"]
+    mode: Literal["manual", "quick"] = "manual"
     video: dict[str, Any]
     preset: str
     frames: dict[str, Any]
@@ -43,6 +90,8 @@ class RunResponse(ApiModel):
     captions: dict[str, Any]
     experiments: list[dict[str, Any]]
     stages: dict[str, str]
+    runtimes: dict[str, float] = {}
+    stage_errors: dict[str, str] = {}
     active_stage: str | None = None
     progress_message: str | None = None
     error: str | None = None
@@ -56,6 +105,7 @@ class StatusResponse(ApiModel):
     active_stage: str | None = None
     progress_message: str | None = None
     stages: dict[str, str]
+    runtimes: dict[str, float] = {}
     error: str | None = None
     generation_outcome: GenerationOutcome | None = None
     degraded: bool = False

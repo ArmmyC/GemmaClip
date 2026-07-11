@@ -4,6 +4,7 @@ import { ArrowRight, ScanSearch } from "lucide-react";
 import { AppHeader } from "@/components/AppHeader";
 import { UploadDropzone } from "@/components/UploadDropzone";
 import { Button } from "@/components/ui/button";
+import { createAndProbeManualRun } from "@/lib/api";
 import { startQuickUpload } from "@/lib/quick-flow";
 
 export const Route = createFileRoute("/lab")({ component: LabEntry });
@@ -18,9 +19,20 @@ function LabEntry() {
     if (!file) { setError("Choose a video first."); return; }
     setBusy(true); setError(null);
     try {
-      await startQuickUpload(file, (runId) => navigate({ to: "/lab/$runId/video", params: { runId } }));
+      const run = await createAndProbeManualRun(file, "balanced");
+      navigate({ to: "/lab/$runId/video", params: { runId: run.id } });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The Lab run could not be created.");
+    } finally { setBusy(false); }
+  }
+
+  async function runAutomatically() {
+    if (!file) { setError("Choose a video first."); return; }
+    setBusy(true); setError(null);
+    try {
+      await startQuickUpload(file, (runId) => navigate({ to: "/quick", search: { runId } as never }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The automatic run could not be created.");
     } finally { setBusy(false); }
   }
 
@@ -37,9 +49,14 @@ function LabEntry() {
         </section>
         <section className="glass-panel relative rounded-2xl p-2 md:p-3" aria-label="Create Gemma Lab run">
           <UploadDropzone onFile={setFile} />
-          <Button className="mt-4 min-h-11 gap-2 rounded-lg px-6" size="lg" onClick={openLab} disabled={busy || !file}>
-            {busy ? "Opening Lab" : "Open in Gemma Lab"} <ArrowRight className="h-4 w-4" />
-          </Button>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <Button className="min-h-11 gap-2 rounded-lg px-6" size="lg" onClick={openLab} disabled={busy || !file}>
+              {busy ? "Opening Lab" : "Open manual Lab"} <ArrowRight className="h-4 w-4" />
+            </Button>
+            <Button variant="outline" className="min-h-11 gap-2 rounded-lg px-6" size="lg" onClick={runAutomatically} disabled={busy || !file}>
+              Run automatically
+            </Button>
+          </div>
           {error && <p role="alert" className="mt-4 text-sm text-danger">{error}</p>}
         </section>
       </main>
