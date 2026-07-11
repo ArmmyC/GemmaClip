@@ -19,11 +19,11 @@ from gemmaclip.io import Task, safe_task_id
 LOGGER = logging.getLogger("gemmaclip.routed")
 AUDIO_ROUTE_MIN_SECONDS = DEFAULT_AUDIO_MIN_REMAINING_SECONDS
 TWO_CALL_VISUAL_MIN_SECONDS = 130.0
-SINGLE_CALL_MIN_SECONDS = 65.0
+SINGLE_CALL_MIN_SECONDS = 70.0
 EVIDENCE_ATTEMPT_MIN_SECONDS = 95.0
-FINAL_SYNTHESIS_MIN_SECONDS = 50.0
-FOCUSED_REPAIR_MIN_SECONDS = 35.0
-SINGLE_CALL_ATTEMPT_MIN_SECONDS = 45.0
+FINAL_SYNTHESIS_MIN_SECONDS = 70.0
+FOCUSED_REPAIR_MIN_SECONDS = 70.0
+SINGLE_CALL_ATTEMPT_MIN_SECONDS = 70.0
 DEFAULT_EVIDENCE_TEMPERATURE = 0.0
 DEFAULT_CAPTION_TEMPERATURE = 0.4
 DEFAULT_REPAIR_TEMPERATURE = 0.25
@@ -121,6 +121,19 @@ def generate_routed_captions(
             "audio preprocessing skipped because runtime is below threshold",
         )
     remaining_after_audio = remaining_time_fn()
+    if remaining_after_audio < SINGLE_CALL_MIN_SECONDS:
+        _log_runtime_stage_skip(
+            active_logger, task.task_id, "single_call", "visual",
+            remaining_after_audio, SINGLE_CALL_MIN_SECONDS, audio, False,
+        )
+        cleanup_audio_candidate(audio)
+        return build_fallback_captions(task.styles)
+    if remaining_after_audio < TWO_CALL_VISUAL_MIN_SECONDS:
+        cleanup_audio_candidate(audio)
+        return _single_visual_caption_call(
+            task, selected_frames, config, client_factory, remaining_time_fn,
+            active_logger, temperature=stage_settings.single_call_temperature,
+        )
     decision = decide_evidence_route(settings, audio, remaining_after_audio)
     _log_route(active_logger, task.task_id, decision, audio, remaining_after_audio, settings.min_remaining_seconds)
 

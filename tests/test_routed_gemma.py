@@ -286,6 +286,39 @@ def test_audio_route_is_rejected_when_preprocessing_consumes_budget(tmp_path, mo
     assert not audio_path.exists()
 
 
+def test_post_audio_budget_between_65_and_130_degrades_to_single_visual_call(tmp_path, monkeypatch):
+    task = Task("v1", "https://example.com/v.mp4", ("formal",))
+    config = load_gemma_config({"GEMMACLIP_PROVIDER": "routed_gemma", "GOOGLE_API_KEY": "google"})
+    clock = {"remaining": 180.0}
+    audio_path = tmp_path / "selected.wav"
+    audio_path.write_bytes(b"wav")
+    def prepare(*args, **kwargs):
+        clock["remaining"] = 100.0
+        return _audio(path=audio_path)
+    monkeypatch.setattr("gemmaclip.routed.prepare_audio_candidate", prepare)
+    calls = []
+    class Client:
+        def __init__(self, model_config): self.model_config = model_config
+        def chat_completion_text(self, messages, temperature, **kwargs):
+            calls.append(self.model_config.model)
+            return '{"formal":"A person walks across a room while the visible furnishings remain still throughout this brief and straightforward indoor clip."}'
+    captions = generate_routed_captions(
+        task, _frames(tmp_path), tmp_path / "video.mp4", config=config,
+        env={"GEMMACLIP_AUDIO_MODE": "auto"}, client_factory=Client,
+        remaining_time_fn=lambda: clock["remaining"],
+    )
+    assert calls == [config.google_visual_model]
+    assert config.google_caption_model not in calls
+    assert set(captions) == {"formal"}
+    assert not audio_path.exists()
+
+
+def test_caption_stage_minimums_exceed_default_sixty_second_request_timeout():
+    assert FINAL_SYNTHESIS_MIN_SECONDS == 70.0
+    assert FOCUSED_REPAIR_MIN_SECONDS == 70.0
+    assert SINGLE_CALL_ATTEMPT_MIN_SECONDS == 70.0
+
+
 def test_selected_audio_route_uses_unified_and_cleans_selected_file(tmp_path, monkeypatch):
     task = Task("v1", "https://example.com/v.mp4", ("formal",))
     config = load_gemma_config({"GEMMACLIP_PROVIDER": "routed_gemma", "GOOGLE_API_KEY": "google"})

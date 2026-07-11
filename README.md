@@ -41,7 +41,7 @@ The `routed_gemma` provider makes Gemma 4 the reasoning and writing core. Gemma 
 
 Fireworks is the primary endpoint for each role; Google is the same-role fallback. No non-Gemma model is silently substituted. This split is intended to remain portable to AMD-hosted deployments as compatible Gemma endpoints become available. Audio support is primarily speech-aware evidence from one selected window of at most 30 seconds; GemmaClip does not claim comprehensive understanding of environmental sounds.
 
-Routed calls recheck the live deadline before every Fireworks or Google attempt. Audio preprocessing is skipped below its runtime threshold, final synthesis falls back to grounded evidence captions when unsafe, and optional focused repair preserves valid captions while filling missing styles locally when time is low. RMS is only an energy heuristic, not confirmation of speech.
+Routed calls recheck the live deadline before every Fireworks or Google attempt. Audio preprocessing is skipped below its runtime threshold, and the full degradation ladder is reapplied afterward. Final synthesis falls back to grounded evidence captions when fewer than 70 seconds remain, while optional repair preserves valid captions and fills missing styles locally below the same threshold. RMS is only an energy heuristic, not confirmation of speech.
 
 Routed stage temperatures are configurable and are conservative starting values, not proven optima: `GEMMACLIP_ROUTED_EVIDENCE_TEMPERATURE=0.0`, `GEMMACLIP_ROUTED_CAPTION_TEMPERATURE=0.4`, `GEMMACLIP_ROUTED_REPAIR_TEMPERATURE=0.25`, and `GEMMACLIP_ROUTED_SINGLE_CALL_TEMPERATURE=0.4`.
 

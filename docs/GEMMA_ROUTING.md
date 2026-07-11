@@ -8,7 +8,7 @@ Every routed task reuses the six-frame hybrid extractor: four fixed temporal anc
 
 The normal visual route is Gemma 4 26B A4B evidence followed by Gemma 4 31B final caption synthesis. With selected non-silent audio and sufficient runtime, Gemma 4 12B Unified replaces only the evidence stage. When runtime is safe, the final 31B stage receives all six frames, normalized evidence JSON, requested styles, and the exact dynamic output schema. Successful normal tasks therefore use two model calls. There is no normal verifier call; a focused repair call is allowed only for missing or invalid requested styles.
 
-The live deadline is checked before every Fireworks and Google attempt. If a primary attempt consumes the safe budget, its same-role fallback is not started. Audio preprocessing is skipped before `ffprobe` when fewer than the configured audio-route seconds remain, and the route is checked again after preprocessing. If evidence succeeds but fewer than 50 seconds remain, final synthesis is replaced by evidence-based captions. Focused repair requires 35 seconds; when unsafe, valid model captions are preserved and only missing styles are filled from evidence-based fallbacks.
+The live deadline is checked before every Fireworks and Google attempt. If a primary attempt consumes the safe budget, its same-role fallback is not started. Audio preprocessing is skipped before `ffprobe` when fewer than the configured audio-route seconds remain, and the complete degradation ladder is applied again afterward. If preprocessing leaves fewer than 130 seconds, the two-stage evidence path is abandoned in favor of direct visual captioning. If evidence succeeds but fewer than 70 seconds remain, final synthesis is replaced by evidence-based captions. Focused repair also requires 70 seconds; when unsafe, valid model captions are preserved and only missing styles are filled from evidence-based fallbacks.
 
 ## Same-role provider fallback
 
@@ -26,12 +26,12 @@ Configured values are opaque callable model or deployment IDs. A Fireworks libra
 
 - At least 170 seconds remaining by default: audio may route to 12B Unified, then 31B.
 - 130–170 seconds: 26B visual evidence, then 31B.
-- 65–130 seconds: one direct 26B visual caption call.
-- Below 65 seconds: deterministic fallback with no remote call.
+- 70–130 seconds: one direct 26B visual caption call.
+- Below 70 seconds: deterministic fallback with no remote call.
 
 These per-task thresholds extend rather than replace the 570-second batch guard and preserve the final output buffer. The container watchdog remains 590 seconds.
 
-Per-attempt safeguards default to 95 seconds for evidence, 50 for final synthesis, 35 for focused repair, and 45 for the single-call route. Each provider fallback receives a fresh deadline check.
+Per-attempt safeguards default to 95 seconds for evidence and 70 seconds for final synthesis, focused repair, and the single-call route. These caption-stage safeguards exceed the default 60-second request timeout by 10 seconds for final writing. Each provider fallback receives a fresh deadline check.
 
 ## Evidence schema
 
