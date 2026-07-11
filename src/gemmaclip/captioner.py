@@ -21,6 +21,7 @@ from gemmaclip.gemma_client import (
     DEFAULT_PROVIDER_FIREWORKS_JUDGE,
     DEFAULT_PROVIDER_GOOGLE,
     DEFAULT_PROVIDER_OPENROUTER,
+    DEFAULT_PROVIDER_ROUTED_GEMMA,
     FireworksRuntimeBudgetError,
     FireworksVisionRequestError,
     create_model_client,
@@ -150,6 +151,7 @@ def generate_captions(
     client_factory: Callable[[Any], Any] = create_model_client,
     remaining_seconds: float | None = None,
     remaining_time_fn: Callable[[], float] | None = None,
+    video_path: str | Path | None = None,
 ) -> dict[str, str]:
     active_logger = logger or LOGGER
 
@@ -206,6 +208,17 @@ def generate_captions(
             client_factory=client_factory,
             model_config=config,
             remaining_time_fn=fireworks_remaining_time_fn,
+        )
+    if config.provider == DEFAULT_PROVIDER_ROUTED_GEMMA:
+        if video_path is None:
+            active_logger.warning("Task %s routed_gemma has no video path; using fallback captions.", task.task_id)
+            return build_fallback_captions(task.styles)
+        from gemmaclip.routed import generate_routed_captions
+        return generate_routed_captions(
+            task, frames, video_path, config=config, env=values,
+            client_factory=client_factory,
+            remaining_time_fn=_make_remaining_time_fn(remaining_seconds, remaining_time_fn),
+            debug_dir=debug_dir, logger=active_logger,
         )
 
     try:

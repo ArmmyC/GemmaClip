@@ -35,6 +35,24 @@ Runtime model configuration:
 - `GEMMACLIP_FORCE_PLACEHOLDER=true` and `GEMMACLIP_FORCE_FALLBACK=true` remain available for control runs.
 - No literal API keys are committed in the Dockerfile, README examples, source code, or tests.
 
+## Why Gemma is essential
+
+The `routed_gemma` provider makes Gemma 4 the reasoning and writing core. Gemma 4 26B A4B produces visual evidence when audio is absent, silent, or unsafe to process. Gemma 4 12B Unified produces routed audio-visual evidence when a bounded audio window is useful and runtime permits. Gemma 4 31B then receives the six chronological hybrid frames, structured evidence, requested styles, and exact output schema to produce final captions.
+
+Fireworks is the primary endpoint for each role; Google is the same-role fallback. No non-Gemma model is silently substituted. This split is intended to remain portable to AMD-hosted deployments as compatible Gemma endpoints become available. Audio support is primarily speech-aware evidence from one selected window of at most 30 seconds; GemmaClip does not claim comprehensive understanding of environmental sounds.
+
+Example without embedded credentials:
+
+```bash
+export GEMMACLIP_PROVIDER=routed_gemma
+export GEMMACLIP_AUDIO_MODE=auto
+export FIREWORKS_API_KEY="${FIREWORKS_API_KEY}"
+export GOOGLE_API_KEY="${GOOGLE_API_KEY}"
+python -m gemmaclip.main --input examples/tasks.json --output output/results.json
+```
+
+See [Gemma routing](docs/GEMMA_ROUTING.md) and [Gemma audio](docs/GEMMA_AUDIO.md) for configuration and failure behavior.
+
 Local run:
 
 ```bash

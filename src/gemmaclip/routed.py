@@ -1,0 +1,301 @@
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import time
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from gemmaclip.audio import AudioEvidenceCandidate, AudioSettings, cleanup_audio_candidate, load_audio_settings, prepare_audio_candidate, unavailable_audio
+from gemmaclip.frames import ExtractedFrame
+from gemmaclip.gemma_client import DEFAULT_PROVIDER_GOOGLE, RoutedGemmaConfig
+from gemmaclip.io import Task, safe_task_id
+
+
+LOGGER = logging.getLogger("gemmaclip.routed")
+NORMAL_TWO_CALL_MIN_SECONDS = 130.0
+SINGLE_CALL_MIN_SECONDS = 65.0
+VALID_AUDIO_STATUSES = {"usable", "uncertain", "silent", "unavailable", "failed"}
+UNSUPPORTED_CLAIMS = ["sound", "dialogue", "motive", "destination", "occupation", "deadline", "relationship", "off-camera event"]
+
+
+@dataclass(frozen=True, slots=True)
+class RouteDecision:
+    route: str
+    use_audio: bool
+    reason: str
+
+
+def decide_evidence_route(settings: AudioSettings, audio: AudioEvidenceCandidate, remaining_seconds: float) -> RouteDecision:
+    if settings.mode == "off":
+        return RouteDecision("visual", False, "audio mode is off")
+    if remaining_seconds < settings.min_remaining_seconds:
+        return RouteDecision("visual", False, "insufficient runtime for audio-visual evidence")
+    useful = audio.available and audio.speech_candidate and not audio.silent and audio.duration_seconds > 0 and audio.path is not None
+    if useful:
+        return RouteDecision("audio_visual", True, f"useful audio selected in {settings.mode} mode")
+    return RouteDecision("visual", False, audio.reason)
+
+
+def generate_routed_captions(
+    task: Task,
+    frames: Sequence[ExtractedFrame],
+    video_path: str | Path,
+    *,
+    config: RoutedGemmaConfig,
+    env: Mapping[str, str],
+    client_factory: Callable[[Any], Any],
+    remaining_time_fn: Callable[[], float],
+    debug_dir: str | Path | None = None,
+    logger: logging.Logger | None = None,
+) -> dict[str, str]:
+    from gemmaclip.captioner import build_evidence_based_captions, build_fallback_captions, cleanup_caption
+
+    active_logger = logger or LOGGER
+    if not config.has_credentials:
+        active_logger.warning("task_id=%s operation=config route=fallback provider=routed_gemma model=none attempt=0 status=missing_credentials elapsed_seconds=0 fallback_used=true audio_available=false audio_selected=false audio_window_seconds=0", task.task_id)
+        return build_fallback_captions(task.styles)
+    selected_frames = list(frames)
+    if len(selected_frames) != 6:
+        active_logger.warning("task_id=%s operation=frames route=fallback provider=routed_gemma model=none attempt=0 status=invalid_frame_count elapsed_seconds=0 fallback_used=true audio_available=false audio_selected=false audio_window_seconds=0", task.task_id)
+        return build_fallback_captions(task.styles)
+
+    remaining = remaining_time_fn()
+    if remaining < SINGLE_CALL_MIN_SECONDS:
+        return build_fallback_captions(task.styles)
+    if remaining < NORMAL_TWO_CALL_MIN_SECONDS:
+        return _single_visual_caption_call(task, selected_frames, config, client_factory, remaining_time_fn, active_logger)
+
+    settings = load_audio_settings(env)
+    audio = unavailable_audio(settings.sample_rate, "audio preprocessing not attempted")
+    if settings.mode != "off":
+        audio = prepare_audio_candidate(video_path, Path(video_path).parent.parent / "audio" / safe_task_id(task.task_id), settings=settings)
+    decision = decide_evidence_route(settings, audio, remaining_time_fn())
+    _log_route(active_logger, task.task_id, decision, audio)
+
+    try:
+        evidence_messages_by_provider = lambda provider: build_evidence_messages(
+            task.task_id, selected_frames, audio, decision, google=provider == DEFAULT_PROVIDER_GOOGLE,
+        )
+        evidence_text = _call_role_with_fallback(
+            task.task_id, decision.route, config, client_factory, evidence_messages_by_provider,
+            temperature=0.0, logger=active_logger,
+        )
+        evidence = normalize_routed_evidence(_extract_object(evidence_text), audio, decision)
+        if debug_dir is not None:
+            _write_debug(debug_dir, task.task_id, "evidence", evidence)
+    except Exception as exc:
+        active_logger.warning("task_id=%s operation=evidence route=%s provider=routed_gemma model=role_configured attempt=0 status=failed elapsed_seconds=0 fallback_used=true audio_available=%s audio_selected=%s audio_window_seconds=%.3f error=%s", task.task_id, decision.route, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds, type(exc).__name__)
+        cleanup_audio_candidate(audio)
+        return build_fallback_captions(task.styles)
+    finally:
+        cleanup_audio_candidate(audio)
+
+    try:
+        caption_text = _call_role_with_fallback(
+            task.task_id, "caption", config, client_factory,
+            lambda provider: build_final_caption_messages(task, selected_frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
+            temperature=0.0, logger=active_logger,
+        )
+        captions = _extract_valid_partial_captions(caption_text, task.styles, evidence)
+        missing_styles = [style for style in task.styles if style not in captions]
+        if missing_styles:
+            repair_text = _call_role_with_fallback(
+                task.task_id, "caption", config, client_factory,
+                lambda provider: build_focused_repair_messages(task, missing_styles, captions, selected_frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
+                temperature=0.0, logger=active_logger,
+            )
+            captions.update(_extract_valid_partial_captions(repair_text, missing_styles, evidence))
+        if set(captions) != set(task.styles):
+            raise ValueError("caption keys do not exactly match requested styles")
+        captions = {style: cleanup_caption(captions[style], style, evidence) for style in task.styles}
+        if debug_dir is not None:
+            _write_debug(debug_dir, task.task_id, "captions", captions)
+        return captions
+    except Exception as exc:
+        active_logger.warning("task_id=%s operation=caption route=caption provider=routed_gemma model=role_configured attempt=0 status=failed elapsed_seconds=0 fallback_used=true audio_available=%s audio_selected=%s audio_window_seconds=%.3f error=%s", task.task_id, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds, type(exc).__name__)
+        return build_evidence_based_captions(task.styles, evidence)
+
+
+def build_evidence_messages(task_id: str, frames: Sequence[ExtractedFrame], audio: AudioEvidenceCandidate, decision: RouteDecision, *, google: bool) -> list[dict[str, Any]]:
+    content = [_image_part(frame.path, google=google) for frame in frames]
+    content.append({"type": "text", "text": build_evidence_prompt(task_id, frames, audio, decision)})
+    if decision.use_audio and audio.path is not None:
+        if google:
+            content.append({"type": "audio_file", "path": str(audio.path), "mime_type": "audio/wav"})
+        else:
+            content.append({"type": "input_audio", "input_audio": {"data": base64.b64encode(audio.path.read_bytes()).decode("ascii"), "format": "wav"}})
+    return [{"role": "system", "content": "Return JSON only. Report visible or audible evidence, never hidden reasoning."}, {"role": "user", "content": content}]
+
+
+def build_final_caption_messages(task: Task, frames: Sequence[ExtractedFrame], evidence: Mapping[str, Any], *, google: bool) -> list[dict[str, Any]]:
+    content = [_image_part(frame.path, google=google) for frame in frames]
+    content.append({"type": "text", "text": build_final_caption_prompt(task, frames, evidence)})
+    return [{"role": "system", "content": final_caption_system_prompt()}, {"role": "user", "content": content}]
+
+
+def build_focused_repair_messages(task: Task, missing_styles: Sequence[str], valid_captions: Mapping[str, str], frames: Sequence[ExtractedFrame], evidence: Mapping[str, Any], *, google: bool) -> list[dict[str, Any]]:
+    content = [_image_part(frame.path, google=google) for frame in frames]
+    schema = {style: "<18-35 word caption>" for style in missing_styles}
+    content.append({"type": "text", "text": (
+        f"Task ID: {task.task_id}\nOnly repair these missing or invalid styles: {', '.join(missing_styles)}. "
+        "Do not return or rewrite valid styles. Follow all grounding and audio rules from the system instruction.\n"
+        f"Retained captions: {json.dumps(dict(valid_captions))}\nEvidence: {json.dumps(evidence, separators=(',', ':'))}\n"
+        f"Return only this exact JSON shape: {json.dumps(schema)}"
+    )})
+    return [{"role": "system", "content": final_caption_system_prompt()}, {"role": "user", "content": content}]
+
+
+def build_evidence_prompt(task_id: str, frames: Sequence[ExtractedFrame], audio: AudioEvidenceCandidate, decision: RouteDecision) -> str:
+    timestamps = ", ".join(f"{frame.timestamp_seconds:.3f}" for frame in frames)
+    audio_instruction = (
+        f"A selected audio window follows: start={audio.start_seconds:.3f}s duration={audio.duration_seconds:.3f}s. Distinguish directly audible speech, uncertain speech, non-speech audio, and unsupported interpretations."
+        if decision.use_audio else
+        "No audio was provided. Set audio.available=false and audio.status=unavailable. Never infer sound, speech, dialogue, music, or noise from images."
+    )
+    return (
+        f"Task ID: {task_id}\nSix chronological frame timestamps: {timestamps}\n{audio_instruction}\n"
+        "Return only one JSON object matching the supplied schema. Report only visible or audible evidence. Do not invent speaker identity, relationships, motives, occupation, destination, or events outside the sampled frames and selected audio window. Put uncertain transcript content in an uncertain state. Only place audio facts safe for final captions in audio.allowed_caption_facts. Set audio.visual_consistency to consistent, contradictory, or unknown. Do not provide chain-of-thought or detailed reasoning.\n"
+        f"Schema: {json.dumps(empty_evidence(), separators=(',', ':'))}"
+    )
+
+
+def final_caption_system_prompt() -> str:
+    from gemmaclip.prompts import build_fireworks_judge_generation_system_prompt
+    humor_prompt = build_fireworks_judge_generation_system_prompt().replace(
+        "Use only the six separate chronological frames provided.",
+        "Use only the six separate chronological frames and structured evidence provided.",
+    )
+    return humor_prompt + (
+        "\n\nAudio evidence rule: use an audio fact only when audio.status is usable, it is listed in "
+        "audio.allowed_caption_facts, and it agrees with the visible evidence. Otherwise do not mention or quote "
+        "speech, music, noise, sound, or speaker intent."
+    )
+
+
+def build_final_caption_prompt(task: Task, frames: Sequence[ExtractedFrame], evidence: Mapping[str, Any]) -> str:
+    schema = {style: "<18-35 word caption>" for style in task.styles}
+    return (
+        f"Task ID: {task.task_id}\nRequested styles: {', '.join(task.styles)}\n"
+        f"Six chronological timestamps: {', '.join(f'{frame.timestamp_seconds:.3f}' for frame in frames)}\n"
+        f"Structured evidence JSON: {json.dumps(evidence, separators=(',', ':'))}\n"
+        "Use an audio-derived fact only when: (1) audio.status is usable, (2) the fact appears in audio.allowed_caption_facts, and (3) it does not conflict with visible frames. If audio is uncertain, contradictory, silent, unavailable, or failed, do not mention dialogue, quote speech, mention music or sound, or infer speaker intent. Do not use a transcript verbatim unless short, clearly audible, relevant, and explicitly allowed.\n"
+        f"Return exactly this dynamic JSON object and no extra prose: {json.dumps(schema)}"
+    )
+
+
+def normalize_routed_evidence(payload: Mapping[str, Any], audio_candidate: AudioEvidenceCandidate, decision: RouteDecision) -> dict[str, Any]:
+    default = empty_evidence()
+    normalized: dict[str, Any] = {}
+    for key, fallback in default.items():
+        value = payload.get(key, fallback)
+        if key == "audio":
+            continue
+        if isinstance(fallback, list):
+            normalized[key] = [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else list(fallback)
+        elif isinstance(fallback, dict):
+            source = value if isinstance(value, Mapping) else {}
+            normalized[key] = {nested: str(source.get(nested, nested_default)).strip() for nested, nested_default in fallback.items()}
+        else:
+            normalized[key] = str(value).strip() if value is not None else ""
+    normalized["unsupported_claim_types"] = list(dict.fromkeys([*normalized["unsupported_claim_types"], *UNSUPPORTED_CLAIMS]))
+    source_audio = payload.get("audio") if isinstance(payload.get("audio"), Mapping) else {}
+    status = str(source_audio.get("status", "unavailable")).strip().lower()
+    if status not in VALID_AUDIO_STATUSES:
+        status = "uncertain" if decision.use_audio else "unavailable"
+    if not decision.use_audio:
+        status = "unavailable"
+    allowed = source_audio.get("allowed_caption_facts", [])
+    normalized["audio"] = {
+        "available": bool(decision.use_audio),
+        "window_start_seconds": audio_candidate.start_seconds if decision.use_audio else 0.0,
+        "window_duration_seconds": audio_candidate.duration_seconds if decision.use_audio else 0.0,
+        "speech_present": bool(source_audio.get("speech_present", False)) if status == "usable" else False,
+        "language": str(source_audio.get("language", "")).strip(),
+        "transcript": str(source_audio.get("transcript", "")).strip(),
+        "status": status,
+        "visual_consistency": str(source_audio.get("visual_consistency", "unknown")).strip().lower() if str(source_audio.get("visual_consistency", "unknown")).strip().lower() in {"consistent", "contradictory", "unknown"} else "unknown",
+        "allowed_caption_facts": [str(item).strip() for item in allowed if str(item).strip()] if status == "usable" and isinstance(allowed, list) else [],
+    }
+    return normalized
+
+
+def empty_evidence() -> dict[str, Any]:
+    return {
+        "scene": "", "main_subjects": [], "actions": [], "setting": "", "visible_objects": [],
+        "mood": "", "camera_notes": "", "temporal_progression": "", "caption_focus": "",
+        "verified_description": "", "possible_misreads_to_avoid": [],
+        "unsupported_claim_types": list(UNSUPPORTED_CLAIMS),
+        "audio": {"available": False, "window_start_seconds": 0, "window_duration_seconds": 0, "speech_present": False, "language": "", "transcript": "", "status": "unavailable", "visual_consistency": "unknown", "allowed_caption_facts": []},
+        "style_hooks": {"sarcastic": "", "humorous_tech": "", "humorous_non_tech": ""},
+    }
+
+
+def _single_visual_caption_call(task, frames, config, client_factory, remaining_time_fn, logger):
+    from gemmaclip.captioner import build_fallback_captions, extract_caption_json, normalize_captions
+    evidence = empty_evidence()
+    try:
+        text = _call_role_with_fallback(task.task_id, "visual", config, client_factory, lambda provider: build_final_caption_messages(task, frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE), temperature=0.0, logger=logger)
+        return normalize_captions(extract_caption_json(text, task.styles), task.styles, evidence)
+    except Exception:
+        return build_fallback_captions(task.styles)
+
+
+def _call_role_with_fallback(task_id, role, config, client_factory, message_builder, *, temperature, logger):
+    errors = []
+    for attempt, model_config in enumerate(config.role_configs(role), start=1):
+        started = time.monotonic()
+        try:
+            from gemmaclip.captioner import request_model_text
+            text = request_model_text(client_factory(model_config), message_builder(model_config.provider), temperature=temperature, use_response_format=False)
+            logger.info("task_id=%s operation=%s route=%s provider=%s model=%s attempt=%s status=success elapsed_seconds=%.3f fallback_used=%s audio_available=unknown audio_selected=unknown audio_window_seconds=0", task_id, role, role, model_config.provider, model_config.model, attempt, time.monotonic() - started, str(attempt > 1).lower())
+            return text
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+            logger.warning("task_id=%s operation=%s route=%s provider=%s model=%s attempt=%s status=failed elapsed_seconds=%.3f fallback_used=%s audio_available=unknown audio_selected=unknown audio_window_seconds=0", task_id, role, role, model_config.provider, model_config.model, attempt, time.monotonic() - started, str(attempt > 1).lower())
+    raise RuntimeError(f"All same-role Gemma providers failed: {', '.join(errors) or 'no credentials'}")
+
+
+def _image_part(path: Path, *, google: bool) -> dict[str, Any]:
+    if google:
+        return {"type": "image_file", "path": str(path), "mime_type": "image/jpeg"}
+    from gemmaclip.captioner import make_jpeg_data_url
+    return {"type": "image_url", "image_url": {"url": make_jpeg_data_url(path)}}
+
+
+def _extract_object(text: str) -> dict[str, Any]:
+    from gemmaclip.gemma_client import extract_json_objects
+    objects = extract_json_objects(text)
+    if not objects:
+        raise ValueError("Model did not return evidence JSON.")
+    return objects[-1]
+
+
+def _extract_valid_partial_captions(text: str, styles: Sequence[str], evidence: Mapping[str, Any]) -> dict[str, str]:
+    from gemmaclip.captioner import cleanup_caption
+    from gemmaclip.gemma_client import extract_json_objects
+    objects = extract_json_objects(text)
+    if not objects:
+        return {}
+    payload = objects[-1]
+    result: dict[str, str] = {}
+    for style in styles:
+        value = payload.get(style)
+        word_count = len(value.split()) if isinstance(value, str) else 0
+        if not isinstance(value, str) or sum(character.isalpha() for character in value) < 5 or not 18 <= word_count <= 35:
+            continue
+        result[style] = cleanup_caption(value.strip(), style, dict(evidence))
+    return result
+
+
+def _write_debug(debug_dir, task_id, suffix, payload):
+    path = Path(debug_dir) / f"{safe_task_id(task_id)}_routed_{suffix}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _log_route(logger, task_id, decision, audio):
+    logger.info("task_id=%s operation=routing route=%s provider=routed_gemma model=role_configured attempt=0 status=selected elapsed_seconds=0 fallback_used=false audio_available=%s audio_selected=%s audio_window_seconds=%.3f", task_id, decision.route, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds)

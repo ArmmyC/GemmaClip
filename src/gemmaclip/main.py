@@ -15,6 +15,7 @@ from gemmaclip.gemma_client import (
     DEFAULT_PROVIDER_FIREWORKS_JUDGE,
     DEFAULT_PROVIDER_GOOGLE,
     DEFAULT_PROVIDER_OPENROUTER,
+    DEFAULT_PROVIDER_ROUTED_GEMMA,
     load_gemma_config,
 )
 from gemmaclip.io import Task, make_frame_manifest_entry, read_tasks, write_frame_manifest, write_results
@@ -111,7 +112,7 @@ def process_task(
             config is not None and config.provider in {DEFAULT_PROVIDER_GOOGLE, DEFAULT_PROVIDER_OPENROUTER}
         )
         use_fireworks_judge_frames = bool(
-            config is not None and config.provider == DEFAULT_PROVIDER_FIREWORKS_JUDGE
+            config is not None and config.provider in {DEFAULT_PROVIDER_FIREWORKS_JUDGE, DEFAULT_PROVIDER_ROUTED_GEMMA}
         )
 
         video_path = download_video(
@@ -150,6 +151,7 @@ def process_task(
             logger=LOGGER,
             remaining_seconds=remaining_seconds,
             remaining_time_fn=remaining_time_fn,
+            video_path=video_path,
         )
     except Exception as exc:
         LOGGER.warning("Task %s failed, writing fallback captions: %s", task.task_id, exc)
