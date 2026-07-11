@@ -114,7 +114,8 @@ def test_prepare_audio_candidate_extracts_selected_window_and_cleans_full_wav(tm
             wav.writeframes(b"".join(int(sample).to_bytes(2, "little", signed=True) for sample in samples))
         return SimpleNamespace(stdout="", stderr="")
     candidate = prepare_audio_candidate(tmp_path / "video.mp4", tmp_path / "audio", settings=settings, runner=runner)
-    assert candidate.available and candidate.speech_candidate and not candidate.silent
+    assert candidate.available and candidate.energy_candidate and not candidate.silent
+    assert candidate.speech_candidate  # temporary compatibility alias
     assert candidate.start_seconds == 2.0
     assert candidate.duration_seconds == 2.0
     assert candidate.path and candidate.path.exists()

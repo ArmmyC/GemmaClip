@@ -4,9 +4,9 @@ GemmaClip uses audio as a low-cost routing signal and as bounded evidence for Ge
 
 ## Preprocessing
 
-For `auto` and `always`, GemmaClip uses `ffprobe` to detect an audio stream and `ffmpeg` to extract mono 16-bit PCM WAV. It measures deterministic RMS energy over short windows and selects the highest-energy contiguous window, capped at 30 seconds by default. Missing streams, extraction errors, command timeouts, and effectively silent audio route to visual evidence. Temporary full-length PCM is deleted immediately; the selected window is deleted after evidence generation.
+For `auto` and `always`, GemmaClip uses `ffprobe` to detect an audio stream and `ffmpeg` to extract mono 16-bit PCM WAV. It measures deterministic RMS energy over short windows and selects the highest-energy contiguous window, capped at 30 seconds by default. This produces an `energy_candidate`; it does not prove speech. Missing streams, extraction errors, command timeouts, and effectively silent audio route to visual evidence. Temporary full-length PCM is deleted immediately; the selected window is deleted after evidence generation.
 
-`off` always uses visual evidence. `always` selects Unified whenever extraction succeeds, audio is non-silent, and the runtime threshold is met. `auto` applies the same conservative checks and requires a useful positive-duration selected window. The model—not the RMS heuristic—decides whether speech or relevant audio information actually exists.
+`off` always uses visual evidence. `always` selects Unified whenever extraction succeeds, audio is non-silent, and the runtime threshold is met. `auto` applies the same conservative checks and requires a useful positive-duration selected window. Audio preprocessing is not started when the live runtime is already below the threshold, and runtime is checked again afterward before selecting Unified. The model—not the RMS energy heuristic—decides whether speech or relevant audio information actually exists.
 
 ## Settings
 
@@ -22,6 +22,8 @@ Invalid modes safely normalize to `auto`. Invalid numeric values use conservativ
 
 ## Limitations and caption safety
 
-Only the selected window is analyzed, so speech elsewhere may be missed. Loud non-speech audio may be routed to Unified; the evidence prompt must classify it rather than assume speech. Uncertain transcripts remain uncertain. Audio facts are caption-safe only when evidence status is `usable`, the fact appears in `allowed_caption_facts`, and it does not contradict the visible frames. Otherwise final captions cannot quote dialogue or mention speech, music, noise, intent, or other audio-derived claims.
+Only the selected window is analyzed, so speech elsewhere may be missed. Loud non-speech audio may be routed to Unified; the evidence prompt must classify it rather than assume speech. Uncertain transcripts remain uncertain. Audio claim categories become usable only through `allowed_caption_facts`, when evidence status is `usable` and visual consistency is not contradictory. Otherwise final captions cannot quote dialogue or mention speech, music, noise, intent, or other audio-derived claims. The full transcript is never caption-safe by default.
+
+Fireworks audio wire compatibility and configured deployment IDs require live verification. Google model IDs also require verification with the submitting account; local tests do not claim live provider compatibility.
 
 Logs contain route metadata and timing but never raw bytes, base64 payloads, signed URLs, keys, private endpoints, or full provider responses. Debug evidence and captions are sanitized structured outputs only.

@@ -13,6 +13,7 @@ from pathlib import Path
 DEFAULT_AUDIO_MAX_SECONDS = 30.0
 DEFAULT_AUDIO_SAMPLE_RATE = 16_000
 DEFAULT_AUDIO_MIN_RMS = 0.01
+DEFAULT_AUDIO_MIN_REMAINING_SECONDS = 170.0
 DEFAULT_AUDIO_COMMAND_TIMEOUT_SECONDS = 15.0
 AUDIO_ENERGY_WINDOW_SECONDS = 0.5
 
@@ -23,7 +24,7 @@ class AudioSettings:
     max_seconds: float = DEFAULT_AUDIO_MAX_SECONDS
     sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE
     min_rms: float = DEFAULT_AUDIO_MIN_RMS
-    min_remaining_seconds: float = 170.0
+    min_remaining_seconds: float = DEFAULT_AUDIO_MIN_REMAINING_SECONDS
     command_timeout_seconds: float = DEFAULT_AUDIO_COMMAND_TIMEOUT_SECONDS
 
 
@@ -31,13 +32,18 @@ class AudioSettings:
 class AudioEvidenceCandidate:
     path: Path | None
     available: bool
-    speech_candidate: bool
+    energy_candidate: bool
     silent: bool
     start_seconds: float
     duration_seconds: float
     sample_rate: int
     rms: float
     reason: str
+
+    @property
+    def speech_candidate(self) -> bool:
+        """Compatibility alias; non-silent energy does not prove speech."""
+        return self.energy_candidate
 
 
 def load_audio_settings(env: Mapping[str, str]) -> AudioSettings:
@@ -49,7 +55,10 @@ def load_audio_settings(env: Mapping[str, str]) -> AudioSettings:
         max_seconds=_positive_float(env.get("GEMMACLIP_AUDIO_MAX_SECONDS"), DEFAULT_AUDIO_MAX_SECONDS),
         sample_rate=_positive_int(env.get("GEMMACLIP_AUDIO_SAMPLE_RATE"), DEFAULT_AUDIO_SAMPLE_RATE),
         min_rms=_nonnegative_float(env.get("GEMMACLIP_AUDIO_MIN_RMS"), DEFAULT_AUDIO_MIN_RMS),
-        min_remaining_seconds=_positive_float(env.get("GEMMACLIP_AUDIO_MIN_REMAINING_SECONDS"), 170.0),
+        min_remaining_seconds=_positive_float(
+            env.get("GEMMACLIP_AUDIO_MIN_REMAINING_SECONDS"),
+            DEFAULT_AUDIO_MIN_REMAINING_SECONDS,
+        ),
     )
 
 

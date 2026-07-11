@@ -3,23 +3,55 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from gemmaclip.audio import AudioEvidenceCandidate, AudioSettings, cleanup_audio_candidate, load_audio_settings, prepare_audio_candidate, unavailable_audio
+from gemmaclip.audio import AudioEvidenceCandidate, AudioSettings, DEFAULT_AUDIO_MIN_REMAINING_SECONDS, cleanup_audio_candidate, load_audio_settings, prepare_audio_candidate, unavailable_audio
 from gemmaclip.frames import ExtractedFrame
 from gemmaclip.gemma_client import DEFAULT_PROVIDER_GOOGLE, RoutedGemmaConfig
 from gemmaclip.io import Task, safe_task_id
 
 
 LOGGER = logging.getLogger("gemmaclip.routed")
-NORMAL_TWO_CALL_MIN_SECONDS = 130.0
+AUDIO_ROUTE_MIN_SECONDS = DEFAULT_AUDIO_MIN_REMAINING_SECONDS
+TWO_CALL_VISUAL_MIN_SECONDS = 130.0
 SINGLE_CALL_MIN_SECONDS = 65.0
+EVIDENCE_ATTEMPT_MIN_SECONDS = 95.0
+FINAL_SYNTHESIS_MIN_SECONDS = 50.0
+FOCUSED_REPAIR_MIN_SECONDS = 35.0
+SINGLE_CALL_ATTEMPT_MIN_SECONDS = 45.0
+DEFAULT_EVIDENCE_TEMPERATURE = 0.0
+DEFAULT_CAPTION_TEMPERATURE = 0.4
+DEFAULT_REPAIR_TEMPERATURE = 0.25
+DEFAULT_SINGLE_CALL_TEMPERATURE = 0.4
 VALID_AUDIO_STATUSES = {"usable", "uncertain", "silent", "unavailable", "failed"}
-UNSUPPORTED_CLAIMS = ["sound", "dialogue", "motive", "destination", "occupation", "deadline", "relationship", "off-camera event"]
+ALWAYS_UNSUPPORTED_CLAIMS = ["motive", "destination", "occupation", "deadline", "relationship", "off-camera event"]
+CONDITIONAL_AUDIO_CLAIMS = ["sound", "dialogue", "speech", "music", "noise"]
+
+
+class RoutedRuntimeBudgetError(RuntimeError):
+    """Raised before a routed provider attempt when the live budget is unsafe."""
+
+
+@dataclass(frozen=True, slots=True)
+class RoutedStageSettings:
+    evidence_temperature: float = DEFAULT_EVIDENCE_TEMPERATURE
+    caption_temperature: float = DEFAULT_CAPTION_TEMPERATURE
+    repair_temperature: float = DEFAULT_REPAIR_TEMPERATURE
+    single_call_temperature: float = DEFAULT_SINGLE_CALL_TEMPERATURE
+
+
+def load_routed_stage_settings(env: Mapping[str, str]) -> RoutedStageSettings:
+    return RoutedStageSettings(
+        evidence_temperature=_parse_temperature(env.get("GEMMACLIP_ROUTED_EVIDENCE_TEMPERATURE"), DEFAULT_EVIDENCE_TEMPERATURE),
+        caption_temperature=_parse_temperature(env.get("GEMMACLIP_ROUTED_CAPTION_TEMPERATURE"), DEFAULT_CAPTION_TEMPERATURE),
+        repair_temperature=_parse_temperature(env.get("GEMMACLIP_ROUTED_REPAIR_TEMPERATURE"), DEFAULT_REPAIR_TEMPERATURE),
+        single_call_temperature=_parse_temperature(env.get("GEMMACLIP_ROUTED_SINGLE_CALL_TEMPERATURE"), DEFAULT_SINGLE_CALL_TEMPERATURE),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +66,7 @@ def decide_evidence_route(settings: AudioSettings, audio: AudioEvidenceCandidate
         return RouteDecision("visual", False, "audio mode is off")
     if remaining_seconds < settings.min_remaining_seconds:
         return RouteDecision("visual", False, "insufficient runtime for audio-visual evidence")
-    useful = audio.available and audio.speech_candidate and not audio.silent and audio.duration_seconds > 0 and audio.path is not None
+    useful = audio.available and audio.energy_candidate and not audio.silent and audio.duration_seconds > 0 and audio.path is not None
     if useful:
         return RouteDecision("audio_visual", True, f"useful audio selected in {settings.mode} mode")
     return RouteDecision("visual", False, audio.reason)
@@ -56,25 +88,41 @@ def generate_routed_captions(
 
     active_logger = logger or LOGGER
     if not config.has_credentials:
-        active_logger.warning("task_id=%s operation=config route=fallback provider=routed_gemma model=none attempt=0 status=missing_credentials elapsed_seconds=0 fallback_used=true audio_available=false audio_selected=false audio_window_seconds=0", task.task_id)
+        active_logger.warning("task_id=%s operation=config route=fallback provider=routed_gemma model=none attempt=0 status=missing_credentials elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=0 fallback_used=true audio_available=false audio_selected=false audio_window_seconds=0", task.task_id, remaining_time_fn())
         return build_fallback_captions(task.styles)
     selected_frames = list(frames)
     if len(selected_frames) != 6:
-        active_logger.warning("task_id=%s operation=frames route=fallback provider=routed_gemma model=none attempt=0 status=invalid_frame_count elapsed_seconds=0 fallback_used=true audio_available=false audio_selected=false audio_window_seconds=0", task.task_id)
+        active_logger.warning("task_id=%s operation=frames route=fallback provider=routed_gemma model=none attempt=0 status=invalid_output elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=0 fallback_used=true audio_available=false audio_selected=false audio_window_seconds=0", task.task_id, remaining_time_fn())
         return build_fallback_captions(task.styles)
 
+    stage_settings = load_routed_stage_settings(env)
     remaining = remaining_time_fn()
     if remaining < SINGLE_CALL_MIN_SECONDS:
+        _log_runtime_stage_skip(
+            active_logger, task.task_id, "single_call", "visual", remaining,
+            SINGLE_CALL_MIN_SECONDS, unavailable_audio(16_000, "runtime unsafe"), False,
+        )
         return build_fallback_captions(task.styles)
-    if remaining < NORMAL_TWO_CALL_MIN_SECONDS:
-        return _single_visual_caption_call(task, selected_frames, config, client_factory, remaining_time_fn, active_logger)
+    if remaining < TWO_CALL_VISUAL_MIN_SECONDS:
+        return _single_visual_caption_call(
+            task, selected_frames, config, client_factory, remaining_time_fn,
+            active_logger, temperature=stage_settings.single_call_temperature,
+        )
 
     settings = load_audio_settings(env)
-    audio = unavailable_audio(settings.sample_rate, "audio preprocessing not attempted")
-    if settings.mode != "off":
+    remaining_before_audio = remaining_time_fn()
+    if settings.mode != "off" and remaining_before_audio >= settings.min_remaining_seconds:
         audio = prepare_audio_candidate(video_path, Path(video_path).parent.parent / "audio" / safe_task_id(task.task_id), settings=settings)
-    decision = decide_evidence_route(settings, audio, remaining_time_fn())
-    _log_route(active_logger, task.task_id, decision, audio)
+    elif settings.mode == "off":
+        audio = unavailable_audio(settings.sample_rate, "audio mode is off")
+    else:
+        audio = unavailable_audio(
+            settings.sample_rate,
+            "audio preprocessing skipped because runtime is below threshold",
+        )
+    remaining_after_audio = remaining_time_fn()
+    decision = decide_evidence_route(settings, audio, remaining_after_audio)
+    _log_route(active_logger, task.task_id, decision, audio, remaining_after_audio, settings.min_remaining_seconds)
 
     try:
         evidence_messages_by_provider = lambda provider: build_evidence_messages(
@@ -82,42 +130,98 @@ def generate_routed_captions(
         )
         evidence_text = _call_role_with_fallback(
             task.task_id, decision.route, config, client_factory, evidence_messages_by_provider,
-            temperature=0.0, logger=active_logger,
+            temperature=stage_settings.evidence_temperature,
+            logger=active_logger,
+            remaining_time_fn=remaining_time_fn,
+            minimum_remaining_seconds=EVIDENCE_ATTEMPT_MIN_SECONDS,
+            operation="evidence",
+            route=decision.route,
+            audio=audio,
+            audio_selected=decision.use_audio,
         )
         evidence = normalize_routed_evidence(_extract_object(evidence_text), audio, decision)
         if debug_dir is not None:
             _write_debug(debug_dir, task.task_id, "evidence", evidence)
+    except RoutedRuntimeBudgetError:
+        return build_fallback_captions(task.styles)
     except Exception as exc:
-        active_logger.warning("task_id=%s operation=evidence route=%s provider=routed_gemma model=role_configured attempt=0 status=failed elapsed_seconds=0 fallback_used=true audio_available=%s audio_selected=%s audio_window_seconds=%.3f error=%s", task.task_id, decision.route, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds, type(exc).__name__)
-        cleanup_audio_candidate(audio)
+        status = "invalid_output" if isinstance(exc, ValueError) else "failed"
+        active_logger.warning("task_id=%s operation=evidence route=%s provider=routed_gemma model=role_configured attempt=0 status=%s elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=%.3f fallback_used=true audio_available=%s audio_selected=%s audio_window_seconds=%.3f error=%s", task.task_id, decision.route, status, remaining_time_fn(), EVIDENCE_ATTEMPT_MIN_SECONDS, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds, type(exc).__name__)
         return build_fallback_captions(task.styles)
     finally:
         cleanup_audio_candidate(audio)
+
+    remaining_before_final = remaining_time_fn()
+    if remaining_before_final < FINAL_SYNTHESIS_MIN_SECONDS:
+        _log_runtime_stage_skip(
+            active_logger, task.task_id, "caption", "caption",
+            remaining_before_final, FINAL_SYNTHESIS_MIN_SECONDS, audio, decision.use_audio,
+        )
+        return build_evidence_based_captions(task.styles, evidence)
 
     try:
         caption_text = _call_role_with_fallback(
             task.task_id, "caption", config, client_factory,
             lambda provider: build_final_caption_messages(task, selected_frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
-            temperature=0.0, logger=active_logger,
+            temperature=stage_settings.caption_temperature,
+            logger=active_logger,
+            remaining_time_fn=remaining_time_fn,
+            minimum_remaining_seconds=FINAL_SYNTHESIS_MIN_SECONDS,
+            operation="caption",
+            route="caption",
+            audio=audio,
+            audio_selected=decision.use_audio,
         )
-        captions = _extract_valid_partial_captions(caption_text, task.styles, evidence)
-        missing_styles = [style for style in task.styles if style not in captions]
-        if missing_styles:
-            repair_text = _call_role_with_fallback(
-                task.task_id, "caption", config, client_factory,
-                lambda provider: build_focused_repair_messages(task, missing_styles, captions, selected_frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
-                temperature=0.0, logger=active_logger,
-            )
-            captions.update(_extract_valid_partial_captions(repair_text, missing_styles, evidence))
-        if set(captions) != set(task.styles):
-            raise ValueError("caption keys do not exactly match requested styles")
-        captions = {style: cleanup_caption(captions[style], style, evidence) for style in task.styles}
-        if debug_dir is not None:
-            _write_debug(debug_dir, task.task_id, "captions", captions)
-        return captions
-    except Exception as exc:
-        active_logger.warning("task_id=%s operation=caption route=caption provider=routed_gemma model=role_configured attempt=0 status=failed elapsed_seconds=0 fallback_used=true audio_available=%s audio_selected=%s audio_window_seconds=%.3f error=%s", task.task_id, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds, type(exc).__name__)
+    except RoutedRuntimeBudgetError:
         return build_evidence_based_captions(task.styles, evidence)
+    except Exception as exc:
+        active_logger.warning("task_id=%s operation=caption route=caption provider=routed_gemma model=role_configured attempt=0 status=failed elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=%.3f fallback_used=true audio_available=%s audio_selected=%s audio_window_seconds=%.3f error=%s", task.task_id, remaining_time_fn(), FINAL_SYNTHESIS_MIN_SECONDS, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds, type(exc).__name__)
+        return build_evidence_based_captions(task.styles, evidence)
+
+    captions = _extract_valid_partial_captions(caption_text, task.styles, evidence)
+    missing_styles = [style for style in task.styles if style not in captions]
+    if missing_styles:
+        _log_invalid_output(
+            active_logger, task.task_id, "caption", remaining_time_fn(),
+            FINAL_SYNTHESIS_MIN_SECONDS, audio, decision.use_audio,
+        )
+        remaining_before_repair = remaining_time_fn()
+        if remaining_before_repair >= FOCUSED_REPAIR_MIN_SECONDS:
+            try:
+                repair_text = _call_role_with_fallback(
+                    task.task_id, "caption", config, client_factory,
+                    lambda provider: build_focused_repair_messages(task, missing_styles, captions, selected_frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
+                    temperature=stage_settings.repair_temperature,
+                    logger=active_logger,
+                    remaining_time_fn=remaining_time_fn,
+                    minimum_remaining_seconds=FOCUSED_REPAIR_MIN_SECONDS,
+                    operation="focused_repair",
+                    route="caption",
+                    audio=audio,
+                    audio_selected=decision.use_audio,
+                )
+                repaired_captions = _extract_valid_partial_captions(repair_text, missing_styles, evidence)
+                captions.update(repaired_captions)
+                if any(style not in repaired_captions for style in missing_styles):
+                    _log_invalid_output(
+                        active_logger, task.task_id, "focused_repair", remaining_time_fn(),
+                        FOCUSED_REPAIR_MIN_SECONDS, audio, decision.use_audio,
+                    )
+            except Exception:
+                pass
+        else:
+            _log_runtime_stage_skip(
+                active_logger, task.task_id, "focused_repair", "caption",
+                remaining_before_repair, FOCUSED_REPAIR_MIN_SECONDS, audio, decision.use_audio,
+            )
+        still_missing = [style for style in task.styles if style not in captions]
+        if still_missing:
+            captions.update(build_evidence_based_captions(still_missing, evidence))
+
+    captions = {style: cleanup_caption(captions[style], style, evidence) for style in task.styles}
+    if debug_dir is not None:
+        _write_debug(debug_dir, task.task_id, "captions", captions)
+    return captions
 
 
 def build_evidence_messages(task_id: str, frames: Sequence[ExtractedFrame], audio: AudioEvidenceCandidate, decision: RouteDecision, *, google: bool) -> list[dict[str, Any]]:
@@ -201,7 +305,6 @@ def normalize_routed_evidence(payload: Mapping[str, Any], audio_candidate: Audio
             normalized[key] = {nested: str(source.get(nested, nested_default)).strip() for nested, nested_default in fallback.items()}
         else:
             normalized[key] = str(value).strip() if value is not None else ""
-    normalized["unsupported_claim_types"] = list(dict.fromkeys([*normalized["unsupported_claim_types"], *UNSUPPORTED_CLAIMS]))
     source_audio = payload.get("audio") if isinstance(payload.get("audio"), Mapping) else {}
     status = str(source_audio.get("status", "unavailable")).strip().lower()
     if status not in VALID_AUDIO_STATUSES:
@@ -209,6 +312,14 @@ def normalize_routed_evidence(payload: Mapping[str, Any], audio_candidate: Audio
     if not decision.use_audio:
         status = "unavailable"
     allowed = source_audio.get("allowed_caption_facts", [])
+    visual_consistency = str(source_audio.get("visual_consistency", "unknown")).strip().lower()
+    if visual_consistency not in {"consistent", "contradictory", "unknown"}:
+        visual_consistency = "unknown"
+    safe_audio_facts = (
+        [str(item).strip() for item in allowed if str(item).strip()]
+        if status == "usable" and visual_consistency != "contradictory" and isinstance(allowed, list)
+        else []
+    )
     normalized["audio"] = {
         "available": bool(decision.use_audio),
         "window_start_seconds": audio_candidate.start_seconds if decision.use_audio else 0.0,
@@ -217,9 +328,17 @@ def normalize_routed_evidence(payload: Mapping[str, Any], audio_candidate: Audio
         "language": str(source_audio.get("language", "")).strip(),
         "transcript": str(source_audio.get("transcript", "")).strip(),
         "status": status,
-        "visual_consistency": str(source_audio.get("visual_consistency", "unknown")).strip().lower() if str(source_audio.get("visual_consistency", "unknown")).strip().lower() in {"consistent", "contradictory", "unknown"} else "unknown",
-        "allowed_caption_facts": [str(item).strip() for item in allowed if str(item).strip()] if status == "usable" and isinstance(allowed, list) else [],
+        "visual_consistency": visual_consistency,
+        "allowed_caption_facts": safe_audio_facts,
     }
+    reported_unsupported = [
+        item for item in normalized["unsupported_claim_types"]
+        if item not in CONDITIONAL_AUDIO_CLAIMS
+    ]
+    unsupported = [*reported_unsupported, *ALWAYS_UNSUPPORTED_CLAIMS]
+    if status != "usable" or visual_consistency == "contradictory":
+        unsupported.extend(CONDITIONAL_AUDIO_CLAIMS)
+    normalized["unsupported_claim_types"] = list(dict.fromkeys(unsupported))
     return normalized
 
 
@@ -228,34 +347,84 @@ def empty_evidence() -> dict[str, Any]:
         "scene": "", "main_subjects": [], "actions": [], "setting": "", "visible_objects": [],
         "mood": "", "camera_notes": "", "temporal_progression": "", "caption_focus": "",
         "verified_description": "", "possible_misreads_to_avoid": [],
-        "unsupported_claim_types": list(UNSUPPORTED_CLAIMS),
+        "unsupported_claim_types": [*ALWAYS_UNSUPPORTED_CLAIMS, *CONDITIONAL_AUDIO_CLAIMS],
         "audio": {"available": False, "window_start_seconds": 0, "window_duration_seconds": 0, "speech_present": False, "language": "", "transcript": "", "status": "unavailable", "visual_consistency": "unknown", "allowed_caption_facts": []},
         "style_hooks": {"sarcastic": "", "humorous_tech": "", "humorous_non_tech": ""},
     }
 
 
-def _single_visual_caption_call(task, frames, config, client_factory, remaining_time_fn, logger):
+def _single_visual_caption_call(
+    task, frames, config, client_factory, remaining_time_fn, logger, *, temperature: float,
+):
     from gemmaclip.captioner import build_fallback_captions, extract_caption_json, normalize_captions
     evidence = empty_evidence()
     try:
-        text = _call_role_with_fallback(task.task_id, "visual", config, client_factory, lambda provider: build_final_caption_messages(task, frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE), temperature=0.0, logger=logger)
+        text = _call_role_with_fallback(
+            task.task_id, "visual", config, client_factory,
+            lambda provider: build_final_caption_messages(task, frames, evidence, google=provider == DEFAULT_PROVIDER_GOOGLE),
+            temperature=temperature,
+            logger=logger,
+            remaining_time_fn=remaining_time_fn,
+            minimum_remaining_seconds=SINGLE_CALL_ATTEMPT_MIN_SECONDS,
+            operation="single_call",
+            route="visual",
+            audio=unavailable_audio(16_000, "single-call visual path"),
+            audio_selected=False,
+        )
         return normalize_captions(extract_caption_json(text, task.styles), task.styles, evidence)
     except Exception:
         return build_fallback_captions(task.styles)
 
 
-def _call_role_with_fallback(task_id, role, config, client_factory, message_builder, *, temperature, logger):
+def _call_role_with_fallback(
+    task_id: str,
+    role: str,
+    config: RoutedGemmaConfig,
+    client_factory: Callable[[Any], Any],
+    message_builder: Callable[[str], Sequence[Mapping[str, Any]]],
+    *,
+    temperature: float,
+    logger: logging.Logger,
+    remaining_time_fn: Callable[[], float],
+    minimum_remaining_seconds: float,
+    operation: str | None = None,
+    route: str | None = None,
+    audio: AudioEvidenceCandidate | None = None,
+    audio_selected: bool | None = None,
+) -> str:
     errors = []
+    operation_name = operation or role
+    route_name = route or role
+    audio_candidate = audio or unavailable_audio(16_000, "audio metadata unavailable")
+    selected_audio = audio_candidate.path is not None if audio_selected is None else audio_selected
     for attempt, model_config in enumerate(config.role_configs(role), start=1):
+        remaining_seconds = remaining_time_fn()
+        if remaining_seconds < minimum_remaining_seconds:
+            _log_remote_attempt(
+                logger, task_id, operation_name, route_name, model_config.provider,
+                model_config.model, attempt, "skipped_runtime", 0.0,
+                remaining_seconds, minimum_remaining_seconds, attempt > 1, audio_candidate, selected_audio,
+            )
+            raise RoutedRuntimeBudgetError(
+                f"Only {remaining_seconds:.1f}s remain; need {minimum_remaining_seconds:.1f}s before {operation_name}."
+            )
         started = time.monotonic()
         try:
             from gemmaclip.captioner import request_model_text
             text = request_model_text(client_factory(model_config), message_builder(model_config.provider), temperature=temperature, use_response_format=False)
-            logger.info("task_id=%s operation=%s route=%s provider=%s model=%s attempt=%s status=success elapsed_seconds=%.3f fallback_used=%s audio_available=unknown audio_selected=unknown audio_window_seconds=0", task_id, role, role, model_config.provider, model_config.model, attempt, time.monotonic() - started, str(attempt > 1).lower())
+            _log_remote_attempt(
+                logger, task_id, operation_name, route_name, model_config.provider,
+                model_config.model, attempt, "success", time.monotonic() - started,
+                remaining_seconds, minimum_remaining_seconds, attempt > 1, audio_candidate, selected_audio,
+            )
             return text
         except Exception as exc:
             errors.append(type(exc).__name__)
-            logger.warning("task_id=%s operation=%s route=%s provider=%s model=%s attempt=%s status=failed elapsed_seconds=%.3f fallback_used=%s audio_available=unknown audio_selected=unknown audio_window_seconds=0", task_id, role, role, model_config.provider, model_config.model, attempt, time.monotonic() - started, str(attempt > 1).lower())
+            _log_remote_attempt(
+                logger, task_id, operation_name, route_name, model_config.provider,
+                model_config.model, attempt, "failed", time.monotonic() - started,
+                remaining_seconds, minimum_remaining_seconds, attempt > 1, audio_candidate, selected_audio,
+            )
     raise RuntimeError(f"All same-role Gemma providers failed: {', '.join(errors) or 'no credentials'}")
 
 
@@ -297,5 +466,65 @@ def _write_debug(debug_dir, task_id, suffix, payload):
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _log_route(logger, task_id, decision, audio):
-    logger.info("task_id=%s operation=routing route=%s provider=routed_gemma model=role_configured attempt=0 status=selected elapsed_seconds=0 fallback_used=false audio_available=%s audio_selected=%s audio_window_seconds=%.3f", task_id, decision.route, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds)
+def _parse_temperature(value: str | None, default: float) -> float:
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        return default
+    if not math.isfinite(parsed):
+        return default
+    return min(2.0, max(0.0, parsed))
+
+
+def _log_remote_attempt(
+    logger,
+    task_id,
+    operation,
+    route,
+    provider,
+    model,
+    attempt,
+    status,
+    elapsed_seconds,
+    remaining_seconds,
+    minimum_remaining_seconds,
+    fallback_used,
+    audio,
+    audio_selected,
+):
+    log_method = logger.info if status == "success" else logger.warning
+    log_method(
+        "task_id=%s operation=%s route=%s provider=%s model=%s attempt=%s status=%s "
+        "elapsed_seconds=%.3f remaining_seconds=%.3f minimum_remaining_seconds=%.3f "
+        "fallback_used=%s audio_available=%s audio_selected=%s audio_window_seconds=%.3f",
+        task_id, operation, route, provider, model, attempt, status,
+        elapsed_seconds, remaining_seconds, minimum_remaining_seconds,
+        str(fallback_used).lower(), str(audio.available).lower(),
+        str(audio_selected).lower(), audio.duration_seconds,
+    )
+
+
+def _log_runtime_stage_skip(logger, task_id, operation, route, remaining_seconds, minimum_remaining_seconds, audio, audio_selected):
+    logger.warning(
+        "task_id=%s operation=%s route=%s provider=routed_gemma model=role_configured attempt=0 "
+        "status=skipped_runtime elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=%.3f "
+        "fallback_used=true audio_available=%s audio_selected=%s audio_window_seconds=%.3f",
+        task_id, operation, route, remaining_seconds, minimum_remaining_seconds,
+        str(audio.available).lower(), str(audio_selected).lower(), audio.duration_seconds,
+    )
+
+
+def _log_invalid_output(logger, task_id, operation, remaining_seconds, minimum_remaining_seconds, audio, audio_selected):
+    logger.warning(
+        "task_id=%s operation=%s route=caption provider=routed_gemma model=role_configured attempt=0 "
+        "status=invalid_output elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=%.3f "
+        "fallback_used=false audio_available=%s audio_selected=%s audio_window_seconds=%.3f",
+        task_id, operation, remaining_seconds, minimum_remaining_seconds,
+        str(audio.available).lower(), str(audio_selected).lower(), audio.duration_seconds,
+    )
+
+
+def _log_route(logger, task_id, decision, audio, remaining_seconds, minimum_remaining_seconds):
+    logger.info("task_id=%s operation=routing route=%s provider=routed_gemma model=role_configured attempt=0 status=success elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=%.3f fallback_used=false audio_available=%s audio_selected=%s audio_window_seconds=%.3f", task_id, decision.route, remaining_seconds, minimum_remaining_seconds, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds)
