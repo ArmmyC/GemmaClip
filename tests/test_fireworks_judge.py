@@ -22,6 +22,14 @@ from gemmaclip.gemma_client import (
     load_gemma_config,
 )
 from gemmaclip.io import Task
+from gemmaclip.prompts import (
+    build_fireworks_judge_generation_system_prompt,
+    build_fireworks_judge_generation_user_prompt,
+    build_fireworks_judge_repair_system_prompt,
+    build_fireworks_judge_repair_user_prompt,
+    build_fireworks_judge_review_system_prompt,
+    build_fireworks_judge_review_user_prompt,
+)
 
 
 def make_task() -> Task:
@@ -72,6 +80,159 @@ def all_style_captions() -> dict[str, str]:
         "humorous_tech": "A worker sits at a desk while the office CPU handles another quiet background task near the monitor.",
         "humorous_non_tech": "A worker sits at a desk while the day rehearses one small office joke beside the monitor.",
     }
+
+
+def test_fireworks_generation_prompt_teaches_human_humor_structure_and_originality():
+    prompt = build_fireworks_judge_generation_system_prompt()
+
+    required_phrases = (
+        "Humor should sound like a concise human observation",
+        "one specific visible anchor",
+        "one familiar expectation",
+        "one compatible but surprising contrast",
+        "one concise resolution or punchline",
+        "Use one clear comedic mechanism per caption",
+        "Place the strongest comic turn near the end",
+        "exactly one familiar technical analogy",
+        "Clearly figurative comparison and personification are allowed",
+        "Do not retrieve, quote, adapt, or copy real jokes",
+        "The following demonstrations teach comedic structure only",
+        "A person repeatedly presses a large pillow into an open suitcase",
+        "A person spreads a fitted sheet across a table",
+        "Before returning the JSON, silently verify",
+        "Return only a JSON object with exactly the requested style keys",
+    )
+    banned_templates = (
+        "how thrilling",
+        "exactly what we needed",
+        "solving world hunger",
+        "important mission",
+        "zoomies",
+        "plot twist",
+        "main character",
+        "NPC",
+        "because apparently",
+        "understood the assignment",
+        "chose violence",
+        "rent free",
+    )
+
+    assert all(phrase in prompt for phrase in required_phrases)
+    assert all(phrase in prompt for phrase in banned_templates)
+    assert len(prompt) < 4_500
+
+
+def test_fireworks_generation_prompt_has_exactly_two_complete_original_demonstrations():
+    prompt = build_fireworks_judge_generation_system_prompt()
+
+    assert prompt.count("Demonstration 1") == 1
+    assert prompt.count("Demonstration 2") == 1
+    assert prompt.count("Demonstration ") == 2
+    for demonstration in prompt.split("Demonstration ")[1:]:
+        assert "Visible event:" in demonstration
+        assert "formal:" in demonstration
+        assert "sarcastic:" in demonstration
+        assert "humorous_tech:" in demonstration
+        assert "humorous_non_tech:" in demonstration
+    assert "Never copy their nouns, situations, sentence openings, metaphors, or punchlines" in prompt
+
+
+def test_fireworks_generation_prompt_does_not_anchor_to_local_evaluation_scenes():
+    prompt = build_fireworks_judge_generation_system_prompt().lower()
+
+    local_scene_terms = (
+        "kitten",
+        "orange tabby",
+        "traffic",
+        "multi-lane",
+        "city street",
+        "autumn",
+        "keyboard",
+        "monitor",
+        "office worker",
+    )
+    assert all(term not in prompt for term in local_scene_terms)
+
+
+def test_protected_fireworks_prompts_remain_byte_for_byte_equal_to_v11(tmp_path):
+    frames = make_frames(tmp_path)
+    styles = ("formal", "sarcastic")
+    captions = initial_captions()
+
+    assert build_fireworks_judge_generation_user_prompt("clip-1", styles, frames) == (
+        "Task ID: clip-1\n"
+        "Requested styles: formal, sarcastic\n"
+        "The following six image parts are separate chronological video frames, in the exact order listed.\n"
+        "- Frame 1: timestamp_seconds=1.000\n"
+        "- Frame 2: timestamp_seconds=2.000\n"
+        "- Frame 3: timestamp_seconds=3.000\n"
+        "- Frame 4: timestamp_seconds=4.000\n"
+        "- Frame 5: timestamp_seconds=5.000\n"
+        "- Frame 6: timestamp_seconds=6.000\n"
+        "Return exactly this dynamic JSON object:\n"
+        "{\n  \"formal\": \"<18-35 word caption>\",\n  \"sarcastic\": \"<18-35 word caption>\"\n}\n"
+        "Every listed key is mandatory. Every key must appear exactly once. Do not omit sarcastic when it is "
+        "requested. Return no additional prose or markdown. Silently check all required keys before responding."
+    )
+    assert build_fireworks_judge_repair_system_prompt() == (
+        "You are GemmaClip's focused caption repair writer. Use only the six separate chronological frames and the "
+        "valid captions provided as context. Return only the requested missing style keys as JSON. Do not rewrite or "
+        "return already valid styles. Every repaired caption must be 18 to 35 words, describe the same visible "
+        "subject and action as the retained captions, and remain factually grounded. sarcastic must be dry, ironic, "
+        "and lightly mocking. humorous_tech uses a natural common technology metaphor. humorous_non_tech uses "
+        "everyday humor without technical jargon. No markdown, analysis, dialogue, names, brands, motives, or "
+        "unseen actions."
+    )
+    assert build_fireworks_judge_review_system_prompt() == (
+        "You are GemmaClip's visual caption judge and minimal rewriter. Visually check every caption against all six "
+        "separate chronological frames. Return only JSON with scores and captions. For each requested style score "
+        "factual accuracy and requested style match from 0.0 to 1.0. Keep captions unchanged when both are strong. "
+        "Rewrite only captions that invent unsupported facts, omit the main subject or action, are generic, match the "
+        "wrong style, repeat another caption too closely, or use awkward forced technology jargon. Do not add new "
+        "facts. Do not include explanations, analysis, markdown, or code fences."
+    )
+    assert build_fireworks_judge_review_user_prompt("clip-1", styles, frames, captions) == (
+        "Task ID: clip-1\n"
+        "Requested styles: formal, sarcastic\n"
+        "The following six image parts are separate chronological video frames, in the exact order listed.\n"
+        "- Frame 1: timestamp_seconds=1.000\n"
+        "- Frame 2: timestamp_seconds=2.000\n"
+        "- Frame 3: timestamp_seconds=3.000\n"
+        "- Frame 4: timestamp_seconds=4.000\n"
+        "- Frame 5: timestamp_seconds=5.000\n"
+        "- Frame 6: timestamp_seconds=6.000\n"
+        "Current captions JSON:\n"
+        "{\n"
+        "  \"formal\": \"A worker stands beside a desk in an office while looking toward a computer monitor.\",\n"
+        "  \"sarcastic\": \"A worker stands by a desk and monitor, delivering the kind of office suspense nobody "
+        "ordered.\"\n"
+        "}\n"
+        "Return exactly this JSON shape:\n"
+        "{\"scores\": {\"<style>\": {\"accuracy\": 0.0, \"style_match\": 0.0}}, \"captions\": {\"<style>\": "
+        "\"caption\"}}"
+    )
+
+
+def test_fireworks_repair_user_prompt_remains_byte_for_byte_equal_to_v11(tmp_path):
+    frames = make_frames(tmp_path)
+    valid = {"formal": initial_captions()["formal"]}
+
+    assert build_fireworks_judge_repair_user_prompt("clip-1", ("sarcastic",), valid, frames) == (
+        "Task ID: clip-1\n"
+        "The previous response produced valid captions for: formal.\n"
+        "It omitted or invalidly produced: sarcastic.\n"
+        "Retained valid captions JSON:\n"
+        "{\n  \"formal\": \"A worker stands beside a desk in an office while looking toward a computer monitor.\"\n}\n"
+        "The following six image parts are separate chronological video frames, in the exact order listed.\n"
+        "- Frame 1: timestamp_seconds=1.000\n"
+        "- Frame 2: timestamp_seconds=2.000\n"
+        "- Frame 3: timestamp_seconds=3.000\n"
+        "- Frame 4: timestamp_seconds=4.000\n"
+        "- Frame 5: timestamp_seconds=5.000\n"
+        "- Frame 6: timestamp_seconds=6.000\n"
+        "Return only this JSON object with exactly the missing or invalid style keys:\n"
+        "{\n  \"sarcastic\": \"<18-35 word caption>\"\n}"
+    )
 
 
 def test_fireworks_judge_configuration_uses_minimax_defaults_and_custom_models():
@@ -190,9 +351,13 @@ class ScriptedJudgeClient:
     def __init__(self, responses):
         self.responses = list(responses)
         self.messages: list[list[dict[str, object]]] = []
+        self.temperatures: list[float] = []
+        self.operations: list[str | None] = []
 
     def complete_json(self, messages, *, temperature, validator, **kwargs):
         self.messages.append(messages)
+        self.temperatures.append(temperature)
+        self.operations.append(kwargs.get("operation"))
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -213,7 +378,37 @@ def test_fireworks_judge_keeps_strong_captions_and_uses_requested_keys_only(tmp_
     assert captions == first
     assert set(captions) == {"formal", "sarcastic"}
     assert len(scripted.messages) == 2
+    assert scripted.operations == ["generation", "review"]
+    assert scripted.temperatures == [0.4, 0.0]
     assert all(len([part for part in call[1]["content"] if part.get("type") == "image_url"]) == 6 for call in scripted.messages)
+
+
+def test_fireworks_focused_repair_and_review_use_their_exact_temperatures(tmp_path):
+    initial = initial_captions()
+    incomplete = {"formal": initial["formal"]}
+    repaired = {"sarcastic": initial["sarcastic"]}
+    reviewed = dict(
+        initial,
+        sarcastic="A worker stands beside a desk and monitor, giving stillness the polished confidence of a major presentation.",
+    )
+    scripted = ScriptedJudgeClient([incomplete, repaired, {"captions": reviewed}])
+
+    captions = generate_captions(
+        make_task(),
+        make_frames(tmp_path),
+        env={"GEMMACLIP_PROVIDER": "fireworks_judge", "FIREWORKS_API_KEY": "key"},
+        client_factory=lambda config: scripted,
+        remaining_seconds=300.0,
+    )
+
+    assert captions == reviewed
+    assert scripted.operations == ["generation", "repair", "review"]
+    assert scripted.temperatures == [0.4, 0.25, 0.0]
+    assert len(scripted.messages) == 3
+    assert all(
+        len([part for part in call[1]["content"] if part.get("type") == "image_url"]) == 6
+        for call in scripted.messages
+    )
 
 
 def test_fireworks_judge_replaces_weak_caption_and_preserves_first_when_review_is_invalid_or_fails(tmp_path):

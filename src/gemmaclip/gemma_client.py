@@ -19,11 +19,13 @@ DEFAULT_PROVIDER_FIREWORKS = "fireworks"
 DEFAULT_PROVIDER_GOOGLE = "google"
 DEFAULT_PROVIDER_OPENROUTER = "openrouter"
 DEFAULT_PROVIDER_FIREWORKS_JUDGE = "fireworks_judge"
+DEFAULT_PROVIDER_ROUTED_GEMMA = "routed_gemma"
 VALID_PROVIDERS = {
     DEFAULT_PROVIDER_FIREWORKS,
     DEFAULT_PROVIDER_GOOGLE,
     DEFAULT_PROVIDER_OPENROUTER,
     DEFAULT_PROVIDER_FIREWORKS_JUDGE,
+    DEFAULT_PROVIDER_ROUTED_GEMMA,
 }
 DEFAULT_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
 DEFAULT_OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -34,6 +36,12 @@ DEFAULT_FALLBACK_MODELS = ("accounts/fireworks/models/kimi-k2p6",)
 DEFAULT_GOOGLE_GEMMA_MODEL = "gemma-4-26b-a4b-it"
 DEFAULT_FIREWORKS_JUDGE_VISION_MODEL = "accounts/fireworks/models/minimax-m3"
 DEFAULT_FIREWORKS_JUDGE_FALLBACK_VISION_MODEL = "accounts/fireworks/models/qwen3p7-plus"
+DEFAULT_FIREWORKS_GEMMA_VISUAL_MODEL = "accounts/fireworks/models/gemma-4-26b-a4b-it"
+DEFAULT_FIREWORKS_GEMMA_AUDIO_VISUAL_MODEL = "accounts/fireworks/models/gemma-4-12b-unified-it"
+DEFAULT_FIREWORKS_GEMMA_CAPTION_MODEL = "accounts/fireworks/models/gemma-4-31b-it"
+DEFAULT_GOOGLE_GEMMA_VISUAL_MODEL = "gemma-4-31b-it"
+DEFAULT_GOOGLE_GEMMA_AUDIO_VISUAL_MODEL = "gemma-4-12b-unified-it"
+DEFAULT_GOOGLE_GEMMA_CAPTION_MODEL = "gemma-4-31b-it"
 DEFAULT_GEMMA_MAX_TOKENS = 2048
 DEFAULT_TOP_K = 40
 DEFAULT_GOOGLE_MAX_RETRIES = 2
@@ -122,9 +130,55 @@ class FireworksJudgeConfig:
     provider: str = DEFAULT_PROVIDER_FIREWORKS_JUDGE
 
 
+@dataclass(frozen=True, slots=True)
+class RoutedGemmaConfig:
+    fireworks_api_key: str
+    google_api_key: str
+    fireworks_base_url: str
+    fireworks_visual_model: str
+    fireworks_audio_visual_model: str
+    fireworks_caption_model: str
+    google_visual_model: str
+    google_audio_visual_model: str
+    google_caption_model: str
+    max_tokens: int = DEFAULT_GEMMA_MAX_TOKENS
+    provider: str = DEFAULT_PROVIDER_ROUTED_GEMMA
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(self.fireworks_api_key or self.google_api_key)
+
+    def role_configs(self, role: str) -> tuple[GemmaModelConfig, ...]:
+        fireworks_models = {
+            "visual": self.fireworks_visual_model,
+            "audio_visual": self.fireworks_audio_visual_model,
+            "caption": self.fireworks_caption_model,
+        }
+        google_models = {
+            "visual": self.google_visual_model,
+            "audio_visual": self.google_audio_visual_model,
+            "caption": self.google_caption_model,
+        }
+        if role not in fireworks_models:
+            raise ValueError(f"Unknown routed Gemma model role: {role}")
+        configs: list[GemmaModelConfig] = []
+        if self.fireworks_api_key:
+            configs.append(GemmaModelConfig(
+                api_key=self.fireworks_api_key, base_url=self.fireworks_base_url,
+                model=fireworks_models[role], fallback_models=(), max_tokens=self.max_tokens,
+                provider=DEFAULT_PROVIDER_FIREWORKS,
+            ))
+        if self.google_api_key:
+            configs.append(GemmaModelConfig(
+                api_key=self.google_api_key, base_url=None, model=google_models[role],
+                fallback_models=(), max_tokens=self.max_tokens, provider=DEFAULT_PROVIDER_GOOGLE,
+            ))
+        return tuple(configs)
+
+
 def load_gemma_config(
     env: Mapping[str, str] | None = None,
-) -> GemmaConfig | FireworksJudgeConfig | None:
+) -> GemmaConfig | FireworksJudgeConfig | RoutedGemmaConfig | None:
     values = env if env is not None else os.environ
     provider = _resolve_provider(values)
 
@@ -136,6 +190,9 @@ def load_gemma_config(
 
     if provider == DEFAULT_PROVIDER_FIREWORKS_JUDGE:
         return load_fireworks_judge_provider_config(values)
+
+    if provider == DEFAULT_PROVIDER_ROUTED_GEMMA:
+        return load_routed_gemma_config(values)
 
     api_key = values.get("GEMMA_API_KEY", "").strip() or values.get("FIREWORKS_API_KEY", "").strip()
     base_url = values.get("GEMMA_BASE_URL", "").strip() or DEFAULT_FIREWORKS_BASE_URL
@@ -213,6 +270,22 @@ def load_fireworks_judge_provider_config(
         base_url=base_url,
         vision_model=vision_model,
         fallback_vision_model=fallback_vision_model,
+        max_tokens=_parse_max_tokens(values.get("GEMMA_MAX_TOKENS")),
+    )
+
+
+def load_routed_gemma_config(env: Mapping[str, str] | None = None) -> RoutedGemmaConfig:
+    values = env if env is not None else os.environ
+    return RoutedGemmaConfig(
+        fireworks_api_key=values.get("FIREWORKS_API_KEY", "").strip() or values.get("GEMMA_API_KEY", "").strip(),
+        google_api_key=values.get("GEMINI_API_KEY", "").strip() or values.get("GOOGLE_API_KEY", "").strip(),
+        fireworks_base_url=values.get("FIREWORKS_BASE_URL", "").strip() or DEFAULT_FIREWORKS_BASE_URL,
+        fireworks_visual_model=values.get("FIREWORKS_GEMMA_VISUAL_MODEL", "").strip() or DEFAULT_FIREWORKS_GEMMA_VISUAL_MODEL,
+        fireworks_audio_visual_model=values.get("FIREWORKS_GEMMA_AUDIO_VISUAL_MODEL", "").strip() or DEFAULT_FIREWORKS_GEMMA_AUDIO_VISUAL_MODEL,
+        fireworks_caption_model=values.get("FIREWORKS_GEMMA_CAPTION_MODEL", "").strip() or DEFAULT_FIREWORKS_GEMMA_CAPTION_MODEL,
+        google_visual_model=values.get("GOOGLE_GEMMA_VISUAL_MODEL", "").strip() or DEFAULT_GOOGLE_GEMMA_VISUAL_MODEL,
+        google_audio_visual_model=values.get("GOOGLE_GEMMA_AUDIO_VISUAL_MODEL", "").strip() or DEFAULT_GOOGLE_GEMMA_AUDIO_VISUAL_MODEL,
+        google_caption_model=values.get("GOOGLE_GEMMA_CAPTION_MODEL", "").strip() or DEFAULT_GOOGLE_GEMMA_CAPTION_MODEL,
         max_tokens=_parse_max_tokens(values.get("GEMMA_MAX_TOKENS")),
     )
 
@@ -1004,6 +1077,16 @@ def _convert_message_content_to_google_parts(
             if not isinstance(path, str) or not path.strip():
                 continue
             uploaded_file = _upload_google_image_path(google_client, Path(path.strip()))
+            parts.append(uploaded_file)
+            uploaded_file_name = getattr(uploaded_file, "name", None)
+            if isinstance(uploaded_file_name, str) and uploaded_file_name.strip():
+                uploaded_file_names.append(uploaded_file_name.strip())
+            continue
+        if item_type == "audio_file":
+            path = item.get("path")
+            if not isinstance(path, str) or not path.strip():
+                continue
+            uploaded_file = google_client.files.upload(file=path.strip(), config={"mime_type": "audio/wav"})
             parts.append(uploaded_file)
             uploaded_file_name = getattr(uploaded_file, "name", None)
             if isinstance(uploaded_file_name, str) and uploaded_file_name.strip():

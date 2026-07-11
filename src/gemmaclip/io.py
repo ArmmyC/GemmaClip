@@ -83,7 +83,7 @@ def make_frame_manifest_entry(
     frames: list[Any],
     metadata: VideoMetadata,
 ) -> dict[str, Any]:
-    return {
+    entry = {
         "task_id": task_id,
         "video_path": str(Path(video_path)),
         "frame_paths": [str(frame.path) for frame in frames],
@@ -101,6 +101,41 @@ def make_frame_manifest_entry(
             "height": metadata.height,
             "frame_count": metadata.frame_count,
         },
+    }
+    frame_selection = _build_frame_selection_metadata(frames, metadata.duration_seconds)
+    if frame_selection is not None:
+        entry["frame_selection"] = frame_selection
+    return entry
+
+
+def _build_frame_selection_metadata(frames: list[Any], duration_seconds: float) -> dict[str, Any] | None:
+    roles = [getattr(frame, "frame_role", "") for frame in frames]
+    if not any(roles):
+        return None
+
+    anchors = [
+        {
+            "timestamp_seconds": frame.timestamp_seconds,
+            "ratio": round(frame.timestamp_seconds / duration_seconds, 3) if duration_seconds > 0 else None,
+        }
+        for frame in frames
+        if getattr(frame, "frame_role", "") == "anchor"
+    ]
+    dynamic = [
+        {
+            "timestamp_seconds": frame.timestamp_seconds,
+            "change_score": getattr(frame, "change_score", None),
+        }
+        for frame in frames
+        if getattr(frame, "frame_role", "") == "dynamic"
+    ]
+    return {
+        "mode": "hybrid" if anchors or dynamic else "uniform",
+        "duration_seconds": duration_seconds,
+        "anchors": anchors,
+        "dynamic": dynamic,
+        "final_timestamps": [frame.timestamp_seconds for frame in frames],
+        "uniform_fallback_used": any(role == "uniform_fallback" for role in roles),
     }
 
 

@@ -281,3 +281,21 @@ def test_process_task_openrouter_path_uses_fast_frame_extraction(tmp_path, monke
 
     assert result["captions"]["formal"] == "clip-1 formal caption."
     assert extraction_modes == [True]
+
+
+def test_process_task_routed_provider_uses_six_frame_hybrid_extractor(tmp_path, monkeypatch):
+    task = make_tasks()[0]
+    extraction_options = []
+    frame_path = tmp_path / "frame_001.jpg"
+    frame_path.write_bytes(b"jpeg")
+    monkeypatch.setattr("gemmaclip.main.download_video", lambda task, **kwargs: tmp_path / "video.mp4")
+    monkeypatch.setattr("gemmaclip.main.probe_video", lambda *args, **kwargs: VideoMetadata(60.0, 24.0, 1280, 720, 1440))
+    def fake_extract_frames(*args, **kwargs):
+        extraction_options.append(kwargs)
+        return [ExtractedFrame(frame_path, float(index)) for index in range(6)]
+    monkeypatch.setattr("gemmaclip.main.extract_frames", fake_extract_frames)
+    monkeypatch.setattr("gemmaclip.main.generate_captions", lambda *args, **kwargs: {style: f"valid caption for {style}" for style in task.styles})
+    result, _ = process_task(task, tmp_path, env={"GEMMACLIP_PROVIDER": "routed_gemma", "FIREWORKS_API_KEY": "secret"})
+    assert result["captions"]
+    assert extraction_options[0]["fireworks_judge"] is True
+    assert extraction_options[0]["google_fast"] is False

@@ -15,6 +15,7 @@ class VideoMetadata:
     width: int | None
     height: int | None
     frame_count: int | None
+    codec: str | None = None
 
 
 def probe_video(
@@ -30,7 +31,7 @@ def probe_video(
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames,duration",
+        "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames,duration,codec_name",
         "-show_entries",
         "format=duration",
         "-of",
@@ -76,6 +77,7 @@ def _parse_ffprobe_payload(payload: dict[str, Any], path: Path) -> VideoMetadata
         width=_parse_int(stream.get("width")),
         height=_parse_int(stream.get("height")),
         frame_count=_parse_int(stream.get("nb_frames")),
+        codec=_parse_optional_string(stream.get("codec_name")),
     )
 
 
@@ -108,3 +110,9 @@ def _parse_fps(value: Any) -> float | None:
         return float(Fraction(str(value)))
     except (ValueError, ZeroDivisionError):
         return None
+
+
+def _parse_optional_string(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()

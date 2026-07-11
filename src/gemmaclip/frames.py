@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
+import os
 import shutil
 import subprocess
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import ceil, sqrt
 from pathlib import Path
@@ -9,6 +12,7 @@ from pathlib import Path
 from gemmaclip.io import safe_task_id
 from gemmaclip.video import VideoMetadata
 
+LOGGER = logging.getLogger("gemmaclip")
 DEFAULT_FRAMES_DIR = Path("/tmp/gemmaclip/frames")
 DEFAULT_FRAME_STRATEGY = "aks-lite"
 MAX_GEMMA_FRAMES = 12
@@ -16,6 +20,11 @@ GOOGLE_FAST_FRAME_COUNT = 6
 GOOGLE_FAST_FRAME_WIDTH = 512
 GOOGLE_FAST_FRAME_RATIOS = (0.05, 0.20, 0.35, 0.55, 0.75, 0.95)
 FIREWORKS_JUDGE_FRAME_RATIOS = (0.05, 0.23, 0.41, 0.59, 0.77, 0.95)
+FIREWORKS_HYBRID_ANCHOR_RATIOS = (0.05, 0.35, 0.65, 0.95)
+FIREWORKS_HYBRID_BACKUP_RATIOS = (0.20, 0.50, 0.80)
+FIREWORKS_SCAN_FRAME_COUNT = 16
+FIREWORKS_SCAN_FRAME_WIDTH = 96
+FIREWORKS_FRAME_MODE_ENV = "GEMMACLIP_FIREWORKS_FRAME_MODE"
 VALID_FRAME_STRATEGIES = {"uniform", "aks-lite"}
 
 
@@ -23,6 +32,24 @@ VALID_FRAME_STRATEGIES = {"uniform", "aks-lite"}
 class ExtractedFrame:
     path: Path
     timestamp_seconds: float
+    frame_role: str = ""
+    change_score: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FrameCandidate:
+    timestamp_seconds: float
+    change_score: float
+
+
+@dataclass(frozen=True, slots=True)
+class FireworksFrameSelection:
+    mode: str
+    duration_seconds: float
+    anchors: tuple[FrameCandidate, ...]
+    dynamic: tuple[FrameCandidate, ...]
+    final_timestamps: tuple[float, ...]
+    uniform_fallback_used: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +90,7 @@ def extract_frames(
     google_fast: bool = False,
     fireworks_judge: bool = False,
     command_timeout_seconds: float = 15.0,
+    env: Mapping[str, str] | None = None,
 ) -> list[ExtractedFrame]:
     if fireworks_judge:
         return extract_fireworks_judge_frames(
@@ -72,6 +100,7 @@ def extract_frames(
             destination_root=destination_root,
             ffmpeg_binary=ffmpeg_binary,
             command_timeout_seconds=command_timeout_seconds,
+            env=env,
         )
 
     if google_fast:
@@ -140,21 +169,269 @@ def extract_fireworks_judge_frames(
     ffmpeg_binary: str = "ffmpeg",
     max_width: int = GOOGLE_FAST_FRAME_WIDTH,
     command_timeout_seconds: float = 15.0,
+    env: Mapping[str, str] | None = None,
 ) -> list[ExtractedFrame]:
     video_file = Path(video_path)
     destination_dir = destination_root / safe_task_id(task_id)
     _prepare_destination_dir(destination_dir)
 
-    timestamps = _fixed_ratio_timestamps(metadata.duration_seconds, FIREWORKS_JUDGE_FRAME_RATIOS)
+    mode = resolve_fireworks_frame_mode(env)
+    selection = select_fireworks_uniform_frame_selection(metadata.duration_seconds)
+    if mode == "hybrid":
+        try:
+            scan_frames = extract_fireworks_scan_frames(
+                task_id,
+                video_file,
+                metadata,
+                destination_root=destination_root,
+                ffmpeg_binary=ffmpeg_binary,
+                command_timeout_seconds=command_timeout_seconds,
+            )
+            scan_candidates = score_fireworks_scan_frames(scan_frames)
+            selection = select_fireworks_hybrid_timestamps(
+                metadata.duration_seconds,
+                [candidate.timestamp_seconds for candidate in scan_candidates],
+                [candidate.change_score for candidate in scan_candidates],
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "Fireworks hybrid frame scan failed for task=%s; falling back to uniform frames: %s",
+                task_id,
+                exc,
+            )
+            selection = select_fireworks_uniform_frame_selection(metadata.duration_seconds, fallback_used=True)
+        finally:
+            shutil.rmtree(destination_dir / "_fireworks_scan", ignore_errors=True)
+
+    try:
+        frames = _extract_frames_at_timestamps(
+            video_file,
+            destination_dir,
+            list(selection.final_timestamps),
+            prefix="frame",
+            ffmpeg_binary=ffmpeg_binary,
+            output_width=max_width,
+            command_timeout_seconds=command_timeout_seconds,
+        )
+    except Exception as exc:
+        if mode != "hybrid" or selection.uniform_fallback_used:
+            raise
+        LOGGER.warning(
+            "Fireworks hybrid final frame extraction failed for task=%s; falling back to uniform frames: %s",
+            task_id,
+            exc,
+        )
+        selection = select_fireworks_uniform_frame_selection(metadata.duration_seconds, fallback_used=True)
+        frames = _extract_frames_at_timestamps(
+            video_file,
+            destination_dir,
+            list(selection.final_timestamps),
+            prefix="frame",
+            ffmpeg_binary=ffmpeg_binary,
+            output_width=max_width,
+            command_timeout_seconds=command_timeout_seconds,
+        )
+
+    roles = _frame_roles_by_timestamp(selection)
+    scores = {round(item.timestamp_seconds, 3): item.change_score for item in selection.dynamic}
+    default_role = "uniform_fallback" if selection.uniform_fallback_used else ("uniform" if selection.mode == "uniform" else "")
+    annotated_frames = [
+        ExtractedFrame(
+            path=frame.path,
+            timestamp_seconds=frame.timestamp_seconds,
+            frame_role=roles.get(round(frame.timestamp_seconds, 3), default_role),
+            change_score=scores.get(round(frame.timestamp_seconds, 3)),
+        )
+        for frame in frames
+    ]
+    _log_fireworks_frame_selection(task_id, selection)
+    return annotated_frames
+
+
+def resolve_fireworks_frame_mode(env: Mapping[str, str] | None = None) -> str:
+    values = env if env is not None else os.environ
+    raw_mode = values.get(FIREWORKS_FRAME_MODE_ENV, "hybrid").strip().lower()
+    if raw_mode in {"hybrid", "uniform"}:
+        return raw_mode
+    LOGGER.warning("Invalid %s=%r; using hybrid Fireworks frame mode.", FIREWORKS_FRAME_MODE_ENV, raw_mode)
+    return "hybrid"
+
+
+def select_fireworks_uniform_frame_selection(
+    duration_seconds: float,
+    *,
+    fallback_used: bool = False,
+) -> FireworksFrameSelection:
+    timestamps = _safe_fixed_ratio_timestamps(duration_seconds, FIREWORKS_JUDGE_FRAME_RATIOS)
+    return FireworksFrameSelection(
+        mode="uniform",
+        duration_seconds=duration_seconds,
+        anchors=tuple(),
+        dynamic=tuple(),
+        final_timestamps=tuple(timestamps),
+        uniform_fallback_used=fallback_used,
+    )
+
+
+def select_fireworks_hybrid_timestamps(
+    duration_seconds: float,
+    candidate_timestamps: Sequence[float],
+    change_scores: Sequence[float],
+) -> FireworksFrameSelection:
+    """Select Fireworks frames using anchors plus high-change candidate timestamps.
+
+    Change score i is associated with candidate[i], the later frame in the
+    consecutive pair that produced the difference.
+    """
+    if duration_seconds <= 0 or len(candidate_timestamps) != len(change_scores):
+        return select_fireworks_uniform_frame_selection(duration_seconds, fallback_used=True)
+
+    anchors = tuple(
+        FrameCandidate(timestamp, 0.0)
+        for timestamp in _fixed_ratio_timestamps(duration_seconds, FIREWORKS_HYBRID_ANCHOR_RATIOS)
+    )
+    selected_dynamic: list[FrameCandidate] = []
+    selected_timestamps = [anchor.timestamp_seconds for anchor in anchors]
+    minimum_separation = max(0.5, 0.08 * duration_seconds)
+
+    ranked_candidates = sorted(
+        (
+            FrameCandidate(round(_clamp_timestamp(timestamp, duration_seconds), 3), float(score))
+            for timestamp, score in zip(candidate_timestamps, change_scores)
+            if timestamp >= 0
+        ),
+        key=lambda candidate: (-candidate.change_score, candidate.timestamp_seconds),
+    )
+    for candidate in ranked_candidates:
+        if len(selected_dynamic) >= 2:
+            break
+        if _is_separated(candidate.timestamp_seconds, selected_timestamps, minimum_separation):
+            selected_dynamic.append(candidate)
+            selected_timestamps.append(candidate.timestamp_seconds)
+
+    for backup_timestamp in _fixed_ratio_timestamps(duration_seconds, FIREWORKS_HYBRID_BACKUP_RATIOS):
+        if len(selected_dynamic) >= 2:
+            break
+        if _is_separated(backup_timestamp, selected_timestamps, minimum_separation):
+            selected_dynamic.append(FrameCandidate(backup_timestamp, 0.0))
+            selected_timestamps.append(backup_timestamp)
+
+    if len(selected_dynamic) < 2:
+        for backup_timestamp in _uniform_timestamps(duration_seconds, 6):
+            if len(selected_dynamic) >= 2:
+                break
+            rounded = round(_clamp_timestamp(backup_timestamp, duration_seconds), 3)
+            if not _timestamp_already_selected(rounded, selected_timestamps):
+                selected_dynamic.append(FrameCandidate(rounded, 0.0))
+                selected_timestamps.append(rounded)
+
+    final_timestamps = sorted(round(timestamp, 3) for timestamp in selected_timestamps)
+    if len(set(final_timestamps)) != 6:
+        final_timestamps = _dedupe_and_fill_timestamps(final_timestamps, duration_seconds)
+    if len(final_timestamps) != 6:
+        return select_fireworks_uniform_frame_selection(duration_seconds, fallback_used=True)
+
+    return FireworksFrameSelection(
+        mode="hybrid",
+        duration_seconds=duration_seconds,
+        anchors=anchors,
+        dynamic=tuple(selected_dynamic[:2]),
+        final_timestamps=tuple(final_timestamps),
+        uniform_fallback_used=False,
+    )
+
+
+def extract_fireworks_scan_frames(
+    task_id: str,
+    video_path: str | Path,
+    metadata: VideoMetadata,
+    *,
+    destination_root: Path = DEFAULT_FRAMES_DIR,
+    ffmpeg_binary: str = "ffmpeg",
+    command_timeout_seconds: float = 15.0,
+) -> list[ExtractedFrame]:
+    candidate_dir = destination_root / safe_task_id(task_id) / "_fireworks_scan"
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    timestamps = _fixed_range_timestamps(metadata.duration_seconds, 0.05, 0.95, FIREWORKS_SCAN_FRAME_COUNT)
     return _extract_frames_at_timestamps(
-        video_file,
-        destination_dir,
+        Path(video_path),
+        candidate_dir,
         timestamps,
-        prefix="frame",
+        prefix="scan",
         ffmpeg_binary=ffmpeg_binary,
-        output_width=max_width,
+        output_width=FIREWORKS_SCAN_FRAME_WIDTH,
         command_timeout_seconds=command_timeout_seconds,
     )
+
+
+def score_fireworks_scan_frames(frames: Sequence[ExtractedFrame]) -> list[FrameCandidate]:
+    Image, _, _, _, _, _ = _load_pillow()
+    candidates: list[FrameCandidate] = []
+    previous = None
+    for frame in frames:
+        with Image.open(frame.path) as image:
+            current = image.convert("L").resize((96, 54))
+        if previous is not None:
+            candidates.append(
+                FrameCandidate(
+                    timestamp_seconds=round(frame.timestamp_seconds, 3),
+                    change_score=compute_frame_change_score(previous, current),
+                )
+            )
+        previous = current.copy()
+    return candidates
+
+
+def compute_frame_change_score(previous_image, current_image) -> float:
+    _, _, _, _, ImageChops, ImageStat = _load_pillow()
+    previous = previous_image.convert("L").resize((96, 54))
+    current = current_image.convert("L").resize((96, 54))
+    difference = ImageChops.difference(previous, current)
+    stat = ImageStat.Stat(difference)
+    return float(stat.mean[0])
+
+
+def _frame_roles_by_timestamp(selection: FireworksFrameSelection) -> dict[float, str]:
+    roles: dict[float, str] = {}
+    for anchor in selection.anchors:
+        roles[round(anchor.timestamp_seconds, 3)] = "anchor"
+    for dynamic in selection.dynamic:
+        roles[round(dynamic.timestamp_seconds, 3)] = "dynamic"
+    return roles
+
+
+def _log_fireworks_frame_selection(task_id: str, selection: FireworksFrameSelection) -> None:
+    LOGGER.info(
+        "Fireworks frames task=%s mode=%s anchors=%s dynamic=%s scores=%s fallback=%s",
+        task_id,
+        selection.mode,
+        _format_timestamps([item.timestamp_seconds for item in selection.anchors]),
+        _format_timestamps([item.timestamp_seconds for item in selection.dynamic]),
+        [round(item.change_score, 1) for item in selection.dynamic],
+        str(selection.uniform_fallback_used).lower(),
+    )
+
+
+def _format_timestamps(timestamps: Sequence[float]) -> list[float]:
+    return [round(timestamp, 2) for timestamp in timestamps]
+
+
+def _is_separated(timestamp: float, selected_timestamps: Sequence[float], minimum_separation: float) -> bool:
+    return all(abs(timestamp - selected) >= minimum_separation for selected in selected_timestamps)
+
+
+def _timestamp_already_selected(timestamp: float, selected_timestamps: Sequence[float]) -> bool:
+    return any(round(selected, 3) == round(timestamp, 3) for selected in selected_timestamps)
+
+
+def _dedupe_and_fill_timestamps(timestamps: Sequence[float], duration_seconds: float) -> list[float]:
+    deduped = sorted(set(round(timestamp, 3) for timestamp in timestamps))
+    for timestamp in _safe_fixed_ratio_timestamps(duration_seconds, FIREWORKS_JUDGE_FRAME_RATIOS):
+        if len(deduped) >= 6:
+            break
+        if timestamp not in deduped:
+            deduped.append(timestamp)
+    return sorted(deduped)[:6]
 
 
 def extract_uniform_frames(
@@ -482,11 +759,32 @@ def _fixed_ratio_timestamps(duration_seconds: float, ratios: tuple[float, ...]) 
     if duration_seconds <= 0:
         raise ValueError("Video duration must be positive.")
 
-    upper_bound = max(duration_seconds - 0.001, 0.0)
+    return [round(_clamp_timestamp(duration_seconds * ratio, duration_seconds), 3) for ratio in ratios]
+
+
+def _safe_fixed_ratio_timestamps(duration_seconds: float, ratios: tuple[float, ...]) -> list[float]:
+    safe_duration = duration_seconds if duration_seconds > 0 else 1.0
+    return _fixed_ratio_timestamps(safe_duration, ratios)
+
+
+def _fixed_range_timestamps(duration_seconds: float, start_ratio: float, end_ratio: float, frame_count: int) -> list[float]:
+    if duration_seconds <= 0:
+        raise ValueError("Video duration must be positive.")
+    if frame_count <= 0:
+        raise ValueError("Frame count must be positive.")
+    if frame_count == 1:
+        return [round(_clamp_timestamp(duration_seconds * start_ratio, duration_seconds), 3)]
+
+    span = end_ratio - start_ratio
     return [
-        round(min(duration_seconds * ratio, upper_bound), 3)
-        for ratio in ratios
+        round(_clamp_timestamp(duration_seconds * (start_ratio + span * index / (frame_count - 1)), duration_seconds), 3)
+        for index in range(frame_count)
     ]
+
+
+def _clamp_timestamp(timestamp: float, duration_seconds: float) -> float:
+    upper_bound = max(duration_seconds - 0.001, 0.0)
+    return min(max(float(timestamp), 0.0), upper_bound)
 
 
 def _extract_frame(
