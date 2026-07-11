@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
@@ -17,6 +18,8 @@ RUN_ID_PATTERN = re.compile(r"run_[A-Za-z0-9_-]{20,80}\Z")
 FRAME_ID_PATTERN = re.compile(r"frame_[0-9]{3}\.jpg\Z")
 DEFAULT_RUNS_DIR = Path(".gemmaclip/runs")
 DEFAULT_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+DEFAULT_RUN_TTL_SECONDS = 86_400
+LOGGER = logging.getLogger("gemmaclip.web.maintenance")
 
 
 class StorageError(RuntimeError):
@@ -36,16 +39,21 @@ class UnsafeAsset(StorageError):
 
 
 class RunStorage:
-    def __init__(self, root: str | Path = DEFAULT_RUNS_DIR, *, max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES) -> None:
+    def __init__(self, root: str | Path = DEFAULT_RUNS_DIR, *, max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES, run_ttl_seconds: int = DEFAULT_RUN_TTL_SECONDS) -> None:
         self.root = Path(root).resolve()
         self.max_upload_bytes = max_upload_bytes
+        self.run_ttl_seconds = max(0, run_ttl_seconds)
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> RunStorage:
         root = env.get("GEMMACLIP_WEB_RUNS_DIR") or env.get("GEMMACLIP_WEB_RUN_DIR") or str(DEFAULT_RUNS_DIR)
-        return cls(root, max_upload_bytes=_positive_int(env.get("GEMMACLIP_WEB_MAX_UPLOAD_BYTES"), DEFAULT_MAX_UPLOAD_BYTES))
+        return cls(
+            root,
+            max_upload_bytes=_positive_int(env.get("GEMMACLIP_WEB_MAX_UPLOAD_BYTES"), DEFAULT_MAX_UPLOAD_BYTES),
+            run_ttl_seconds=_nonnegative_int(env.get("GEMMACLIP_WEB_RUN_TTL_SECONDS"), DEFAULT_RUN_TTL_SECONDS),
+        )
 
     def create_run(self, original_filename: str, suffix: str, content_type: str) -> dict[str, Any]:
         run_id = "run_" + secrets.token_urlsafe(18).replace("-", "_")
@@ -140,6 +148,54 @@ class RunStorage:
         run_dir = self.run_dir(run_id)
         shutil.rmtree(run_dir)
 
+    def recover_interrupted_runs(self) -> list[str]:
+        recovered: list[str] = []
+        for run_id in self._stored_run_ids():
+            try:
+                run = self.read_run(run_id)
+                if run.get("status") != "processing":
+                    continue
+                def interrupt(payload: dict[str, Any]) -> None:
+                    payload["status"] = "error"
+                    payload["progressMessage"] = "Processing was interrupted by a server restart."
+                    payload["error"] = "Processing was interrupted. Please start a new run."
+                    active = payload.get("activeStage")
+                    if active in payload.get("stages", {}):
+                        payload["stages"][active] = "error"
+                self.update_run(run_id, interrupt)
+                recovered.append(run_id)
+                LOGGER.info("run_id=%s operation=recovery status=interrupted", run_id)
+            except Exception as exc:
+                LOGGER.warning("operation=recovery status=skipped error=%s", type(exc).__name__)
+        return recovered
+
+    def cleanup_expired_runs(self, active_run_ids: set[str] | None = None, *, now: datetime | None = None) -> list[str]:
+        if self.run_ttl_seconds <= 0:
+            return []
+        active = active_run_ids or set()
+        current = now or datetime.now(UTC)
+        deleted: list[str] = []
+        for run_id in self._stored_run_ids():
+            if run_id in active:
+                continue
+            try:
+                run = self.read_run(run_id)
+                if run.get("status") not in {"ready", "error", "pending"}:
+                    continue
+                created = _parse_created_at(run.get("createdAt"))
+                age_seconds = (current - created).total_seconds()
+                if age_seconds <= self.run_ttl_seconds:
+                    continue
+                self.delete_run(run_id)
+                deleted.append(run_id)
+                LOGGER.info("run_id=%s operation=cleanup status=deleted age_seconds=%.0f", run_id, age_seconds)
+            except Exception as exc:
+                LOGGER.warning("operation=cleanup status=skipped error=%s", type(exc).__name__)
+        return deleted
+
+    def _stored_run_ids(self) -> list[str]:
+        return sorted(path.name for path in self.root.iterdir() if path.is_dir() and RUN_ID_PATTERN.fullmatch(path.name))
+
 
 def validate_run_id(run_id: str) -> str:
     if not isinstance(run_id, str) or not RUN_ID_PATTERN.fullmatch(run_id):
@@ -186,6 +242,8 @@ def _initial_run(run_id: str, filename: str, content_type: str) -> dict[str, Any
         "activeStage": "video",
         "progressMessage": "Video uploaded",
         "error": None,
+        "generationOutcome": None,
+        "degraded": False,
     }
 
 
@@ -195,3 +253,20 @@ def _positive_int(value: str | None, default: int) -> int:
     except ValueError:
         return default
     return parsed if parsed > 0 else default
+
+
+def _nonnegative_int(value: str | None, default: int) -> int:
+    try:
+        parsed = int(value) if value is not None else default
+    except ValueError:
+        return default
+    return parsed if parsed >= 0 else 0
+
+
+def _parse_created_at(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("Run creation time is invalid.")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)

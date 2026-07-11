@@ -52,16 +52,12 @@ export function CaptionCard({ caption, onRegenerate, onCopy }: Props) {
         <p className="text-pretty text-[15px] leading-relaxed">{caption.text}</p>
       </div>
       <div className="space-y-3 border-t border-border/60 bg-background/40 px-5 py-3">
-        <div className="flex flex-wrap gap-1.5">
-          {caption.evidenceUsed.visualScene && (
-            <EvBadge>visual scene</EvBadge>
-          )}
-          {caption.evidenceUsed.visibleAction && (
-            <EvBadge>visible action</EvBadge>
-          )}
-          {caption.evidenceUsed.allowedAudioFact && (
-            <EvBadge>allowed audio fact</EvBadge>
-          )}
+        <div>
+          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Grounding available</div>
+          <div className="flex flex-wrap gap-1.5">
+            {caption.groundingContext.visualEvidenceAvailable && <EvBadge>visual evidence</EvBadge>}
+            {caption.groundingContext.audioEvidenceAvailable && <EvBadge>caption-safe audio evidence</EvBadge>}
+          </div>
         </div>
         <div className="flex items-center justify-between">
           <span className="font-mono text-[11px] text-muted-foreground">

@@ -11,7 +11,10 @@ from io import BytesIO
 from pathlib import Path
 import tempfile
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from gemmaclip.routed import GenerationOutcome
 
 from PIL import Image, ImageChops, ImageOps
 
@@ -153,6 +156,7 @@ def generate_captions(
     remaining_time_fn: Callable[[], float] | None = None,
     video_path: str | Path | None = None,
     stage_callback: Callable[[str], None] | None = None,
+    outcome_callback: Callable[[GenerationOutcome], None] | None = None,
 ) -> dict[str, str]:
     active_logger = logger or LOGGER
 
@@ -211,15 +215,21 @@ def generate_captions(
             remaining_time_fn=fireworks_remaining_time_fn,
         )
     if config.provider == DEFAULT_PROVIDER_ROUTED_GEMMA:
+        from gemmaclip.routed import GENERATION_OUTCOME_DETERMINISTIC_FALLBACK, generate_routed_captions
         if video_path is None:
             active_logger.warning("Task %s routed_gemma has no video path; using fallback captions.", task.task_id)
+            if outcome_callback is not None:
+                try:
+                    outcome_callback(GENERATION_OUTCOME_DETERMINISTIC_FALLBACK)
+                except Exception as exc:
+                    active_logger.warning("Task %s outcome callback failed safely: %s", task.task_id, type(exc).__name__)
             return build_fallback_captions(task.styles)
-        from gemmaclip.routed import generate_routed_captions
         return generate_routed_captions(
             task, frames, video_path, config=config, env=values,
             client_factory=client_factory,
             remaining_time_fn=_make_remaining_time_fn(remaining_seconds, remaining_time_fn),
             debug_dir=debug_dir, logger=active_logger, stage_callback=stage_callback,
+            outcome_callback=outcome_callback,
         )
 
     try:

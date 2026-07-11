@@ -1,11 +1,14 @@
 from concurrent.futures import Executor, Future
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
+import pytest
 
 from gemmaclip.web.app import create_app
 from gemmaclip.web.jobs import JobManager
 from gemmaclip.web.services import WebServices
 from gemmaclip.web.storage import RunStorage
+from gemmaclip.web.storage import RunNotFound
 
 
 class NoopExecutor(Executor):
@@ -25,6 +28,7 @@ def test_upload_config_media_delete_and_secret_filtering(tmp_path):
     config = client.get("/api/config")
     assert config.status_code == 200 and config.json()["gemmaCredentialsConfigured"] is True
     assert "super-secret" not in config.text and "FIREWORKS" not in config.text
+    assert config.json()["availableCaptionStyles"] == ["formal", "sarcastic", "humorous-tech", "humorous-non-tech"]
     response = client.post("/api/runs", files={"video": ("../clip.mp4", b"video", "video/mp4")})
     assert response.status_code == 201
     run_id = response.json()["id"]
@@ -59,6 +63,38 @@ def test_missing_credentials_is_clear_and_sanitized(tmp_path):
     response = client.post(f"/api/runs/{uploaded['id']}/quick-caption")
     assert response.status_code == 503
     assert response.json() == {"detail": "Gemma credentials are not configured for routed captioning."}
+
+
+def test_active_run_cannot_be_deleted(tmp_path):
+    client, storage = client_for(tmp_path, env={"GOOGLE_API_KEY": "configured"})
+    uploaded = client.post("/api/runs", files={"video": ("clip.mp4", b"video", "video/mp4")}).json()
+    assert client.post(f"/api/runs/{uploaded['id']}/quick-caption").status_code == 202
+    response = client.delete(f"/api/runs/{uploaded['id']}")
+    assert response.status_code == 409
+    assert response.json() == {"detail": "This run is currently processing and cannot be deleted."}
+    assert storage.run_dir(uploaded["id"]).exists()
+
+
+def test_app_lifespan_recovers_interrupted_run(tmp_path):
+    storage = RunStorage(tmp_path)
+    run = storage.create_run("clip.mp4", ".mp4", "video/mp4")
+    storage.update_run(run["id"], lambda payload: payload.update(status="processing", activeStage="frames"))
+    services = WebServices(storage, env={})
+    jobs = JobManager(storage, services, executor=NoopExecutor())
+    with TestClient(create_app(storage=storage, services=services, jobs=jobs, env={})):
+        assert storage.read_run(run["id"])["status"] == "error"
+
+
+def test_app_lifespan_removes_expired_inactive_run(tmp_path):
+    storage = RunStorage(tmp_path, run_ttl_seconds=60)
+    run = storage.create_run("clip.mp4", ".mp4", "video/mp4")
+    old = (datetime.now(UTC) - timedelta(seconds=61)).isoformat()
+    storage.update_run(run["id"], lambda payload: payload.update(status="ready", createdAt=old))
+    services = WebServices(storage, env={})
+    jobs = JobManager(storage, services, executor=NoopExecutor())
+    with TestClient(create_app(storage=storage, services=services, jobs=jobs, env={})):
+        with pytest.raises(RunNotFound):
+            storage.read_run(run["id"])
 
 
 def test_unexpected_api_errors_do_not_expose_internal_details(tmp_path):

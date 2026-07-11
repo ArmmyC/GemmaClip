@@ -17,6 +17,12 @@ from gemmaclip.io import Task
 from gemmaclip.video import VideoMetadata, probe_video
 from gemmaclip.web.adapters import adapt_captions, adapt_evidence, adapt_frames, adapt_video_metadata, selected_route_from_evidence
 from gemmaclip.web.storage import RunStorage
+from gemmaclip.routed import (
+    GENERATION_OUTCOME_DETERMINISTIC_FALLBACK,
+    GENERATION_OUTCOME_EVIDENCE_FALLBACK,
+    GENERATION_OUTCOME_MODEL,
+    GenerationOutcome,
+)
 
 
 DEFAULT_STYLES = ("formal", "sarcastic", "humorous_tech", "humorous_non_tech")
@@ -141,6 +147,10 @@ class WebServices:
 
         task = Task(run_id, "web-upload", DEFAULT_STYLES)
         debug_dir = self.storage.run_dir(run_id) / "debug"
+        outcome: GenerationOutcome | None = None
+        def capture_outcome(value: GenerationOutcome) -> None:
+            nonlocal outcome
+            outcome = value
         try:
             captions = self.dependencies.caption_generate_fn(
                 task,
@@ -151,14 +161,24 @@ class WebServices:
                 client_factory=self.dependencies.client_factory,
                 remaining_time_fn=lambda: max(0.0, deadline - time.monotonic()),
                 stage_callback=routed_stage,
+                outcome_callback=capture_outcome,
             )
         except Exception as exc:
             raise WebPipelineError("Gemma captioning failed. Check the configured Gemma deployment and try again.") from exc
 
         evidence = self._load_evidence_debug(run_id)
+        if outcome == GENERATION_OUTCOME_DETERMINISTIC_FALLBACK:
+            self.storage.update_run(run_id, lambda payload: _store_generation_outcome(payload, outcome, False))
+            raise WebPipelineError("Gemma could not produce grounded evidence for this video. Please retry or check the configured deployment.")
+        if outcome not in {GENERATION_OUTCOME_MODEL, GENERATION_OUTCOME_EVIDENCE_FALLBACK}:
+            raise WebPipelineError("Gemma captioning did not report a valid generation outcome. Please retry.")
+        if set(captions) != set(DEFAULT_STYLES) or any(not str(captions.get(style, "")).strip() for style in DEFAULT_STYLES):
+            raise WebPipelineError("Gemma captioning did not produce all required caption styles. Please retry.")
+        if outcome == GENERATION_OUTCOME_EVIDENCE_FALLBACK and not evidence:
+            raise WebPipelineError("Gemma captioning could not preserve grounded evidence. Please retry.")
         selected_route, route_reason = selected_route_from_evidence(evidence)
         adapted_evidence = adapt_evidence(evidence, selected_route=selected_route, route_reason=route_reason)
-        adapted_caption_results = adapt_captions(captions)
+        adapted_caption_results = adapt_captions(captions, evidence)
         self.storage.write_artifact_json(run_id, "debug/evidence.json", evidence)
         self.storage.write_artifact_json(run_id, "debug/captions.json", captions)
         self.storage.write_artifact_json(run_id, "results/captions.json", captions)
@@ -171,6 +191,7 @@ class WebServices:
             payload["activeStage"] = "compare"
             payload["progressMessage"] = "Complete"
             payload["error"] = None
+            _store_generation_outcome(payload, outcome, outcome == GENERATION_OUTCOME_EVIDENCE_FALLBACK)
             for stage in ("video", "frames", "audio", "evidence", "captions"):
                 payload["stages"][stage] = "complete"
             payload["stages"]["compare"] = "waiting"
@@ -221,3 +242,8 @@ def _store_audio_from_evidence(payload: dict[str, Any], evidence: Mapping[str, A
             "waveform": [],
         }
     )
+
+
+def _store_generation_outcome(payload: dict[str, Any], outcome: GenerationOutcome, degraded: bool) -> None:
+    payload["generationOutcome"] = outcome
+    payload["degraded"] = degraded

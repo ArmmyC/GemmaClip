@@ -21,6 +21,8 @@ Vite proxies `/api` to `http://127.0.0.1:8000`. Production builds use `npm run b
 
 ## Configuration
 
+`GEMMACLIP_WEB_RUN_TTL_SECONDS` controls retention in seconds and defaults to `86400` (24 hours). A value of `0` or less disables automatic deletion.
+
 - `GEMMACLIP_WEB_RUNS_DIR` — filesystem run root; default `.gemmaclip/runs`.
 - `GEMMACLIP_WEB_MAX_UPLOAD_BYTES` — upload limit; default 200 MiB.
 - `GEMMACLIP_WEB_HOST` and `GEMMACLIP_WEB_PORT` — API bind address and port.
@@ -31,6 +33,16 @@ Vite proxies `/api` to `http://127.0.0.1:8000`. Production builds use `npm run b
 The production client does not silently fall back to mock data. The preserved `lovable/` directory remains the design snapshot.
 
 Each run stores its upload, six selected frames, sanitized evidence, and captions below a server-generated run ID. Generated media is ignored by Git and never stored under frontend static assets.
+
+Runs expose one generation outcome:
+
+- `model_generated`: a remote Gemma call produced caption output. A small number of missing styles may still be completed locally from evidence.
+- `evidence_fallback`: Gemma produced valid structured evidence, but final writing failed or became runtime-unsafe. The run remains ready, is marked degraded, and the UI explains the fallback.
+- `deterministic_fallback`: no valid Gemma evidence or captions succeeded. The web job becomes an error and does not publish generic leaderboard fallback captions as successful demo output.
+
+At API startup, interrupted `processing` runs are marked error without deleting artifacts. Startup and new uploads remove expired pending, ready, or error runs; active jobs are retained and cannot be deleted through the API. The executor is intentionally single-process and in-memory: jobs are not resumed after restart, and internally owned worker threads shut down through FastAPI lifespan handling.
+
+Caption cards report whether visual and caption-safe audio grounding context was available. Exact per-caption or sentence-level attribution is not tracked and is not claimed.
 
 ## Current scope
 

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, fromBackendStyle, labPath, toBackendStyle, waitForRun } from "./api";
+import { api, ApiError, createAndStartQuickRun, fromBackendStyle, labPath, toBackendStyle, waitForRun } from "./api";
 
 const response = (body: unknown, status = 200) => new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("real API client", () => {
   it("uploads the selected File with FormData", async () => {
@@ -30,5 +30,41 @@ describe("real API client", () => {
   it("does not hide production HTTP errors behind mock data", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ detail: "Run not found." }, 404)));
     await expect(api.getRun("run_aaaaaaaaaaaaaaaaaaaa")).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("deletes a newly uploaded run when startup fails and preserves the original error", async () => {
+    const original = new ApiError("Missing credentials", 503);
+    vi.spyOn(api, "createRun").mockResolvedValue({ id: "run_aaaaaaaaaaaaaaaaaaaa" } as never);
+    vi.spyOn(api, "startQuickCaption").mockRejectedValue(original);
+    const remove = vi.spyOn(api, "deleteRun").mockRejectedValue(new Error("cleanup failed"));
+    await expect(createAndStartQuickRun(new File(["x"], "clip.mp4"))).rejects.toBe(original);
+    expect(remove).toHaveBeenCalledWith("run_aaaaaaaaaaaaaaaaaaaa");
+  });
+
+  it("preserves the run after successful startup", async () => {
+    const run = { id: "run_aaaaaaaaaaaaaaaaaaaa" };
+    vi.spyOn(api, "createRun").mockResolvedValue(run as never);
+    vi.spyOn(api, "startQuickCaption").mockResolvedValue(run as never);
+    const remove = vi.spyOn(api, "deleteRun");
+    await expect(createAndStartQuickRun(new File(["x"], "clip.mp4"))).resolves.toBe(run);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("does not delete when upload fails before a run exists", async () => {
+    const original = new ApiError("Upload rejected", 413);
+    vi.spyOn(api, "createRun").mockRejectedValue(original);
+    const remove = vi.spyOn(api, "deleteRun");
+    await expect(createAndStartQuickRun(new File(["x"], "clip.mp4"))).rejects.toBe(original);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("attempts cleanup for a startup conflict", async () => {
+    const run = { id: "run_aaaaaaaaaaaaaaaaaaaa" };
+    const original = new ApiError("Already processing", 409);
+    vi.spyOn(api, "createRun").mockResolvedValue(run as never);
+    vi.spyOn(api, "startQuickCaption").mockRejectedValue(original);
+    const remove = vi.spyOn(api, "deleteRun").mockResolvedValue();
+    await expect(createAndStartQuickRun(new File(["x"], "clip.mp4"))).rejects.toBe(original);
+    expect(remove).toHaveBeenCalledWith(run.id);
   });
 });

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from gemmaclip.routed import GenerationOutcome
 
 
 def _camel(value: str) -> str:
@@ -45,6 +46,8 @@ class RunResponse(ApiModel):
     active_stage: str | None = None
     progress_message: str | None = None
     error: str | None = None
+    generation_outcome: GenerationOutcome | None = None
+    degraded: bool = False
 
 
 class StatusResponse(ApiModel):
@@ -54,6 +57,8 @@ class StatusResponse(ApiModel):
     progress_message: str | None = None
     stages: dict[str, str]
     error: str | None = None
+    generation_outcome: GenerationOutcome | None = None
+    degraded: bool = False
 
 
 class ApiErrorResponse(ApiModel):

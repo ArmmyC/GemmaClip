@@ -15,6 +15,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { runKey } from "@/lib/hooks";
 import type { CaptionStyle, CaptionConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { GenerationOutcomeNotice } from "@/components/GenerationOutcomeNotice";
 
 export const Route = createFileRoute("/lab/$runId/captions")({
   component: CaptionsStage,
@@ -75,6 +76,7 @@ function CaptionsStage() {
         title="Write, styled and grounded"
         description="Captions can only reference facts already established as evidence. Focused repair rewrites lines that stray."
       />
+      <GenerationOutcomeNotice outcome={run.generationOutcome} compact />
 
       <div className="grid gap-6 lg:grid-cols-[1fr_1.6fr]">
         <ConfigSection

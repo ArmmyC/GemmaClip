@@ -104,7 +104,14 @@ def adapt_evidence(evidence: Mapping[str, Any], *, selected_route: str, route_re
     }
 
 
-def adapt_captions(captions: Mapping[str, str]) -> list[dict[str, Any]]:
+def adapt_captions(captions: Mapping[str, str], evidence: Mapping[str, Any]) -> list[dict[str, Any]]:
+    visual_available = _visual_evidence_available(evidence)
+    audio = evidence.get("audio") if isinstance(evidence.get("audio"), Mapping) else {}
+    audio_available = (
+        str(audio.get("status", "")).lower() == "usable"
+        and bool(_strings(audio.get("allowed_caption_facts")))
+        and str(audio.get("visual_consistency", "unknown")).lower() != "contradictory"
+    )
     results: list[dict[str, Any]] = []
     for backend_style, text in captions.items():
         frontend_style = backend_style_to_frontend(backend_style)
@@ -116,7 +123,10 @@ def adapt_captions(captions: Mapping[str, str]) -> list[dict[str, Any]]:
                 "wordCount": len(text.split()),
                 "charCount": len(text),
                 "status": "valid",
-                "evidenceUsed": {"visualScene": True, "visibleAction": True, "allowedAudioFact": False},
+                "groundingContext": {
+                    "visualEvidenceAvailable": visual_available,
+                    "audioEvidenceAvailable": audio_available,
+                },
             }
         )
     return results
@@ -124,10 +134,26 @@ def adapt_captions(captions: Mapping[str, str]) -> list[dict[str, Any]]:
 
 def selected_route_from_evidence(evidence: Mapping[str, Any]) -> tuple[str, str]:
     audio = evidence.get("audio") if isinstance(evidence.get("audio"), Mapping) else {}
-    status = str(audio.get("status", "unavailable"))
-    if bool(audio.get("available")) and status == "usable":
-        return "gemma-4-12b-unified", "A usable audio window was selected and normalized by Gemma alongside the video frames."
-    return "gemma-4-26b-a4b", "Visual evidence was used because no caption-safe audio evidence was available."
+    status = str(audio.get("status", "unavailable")).lower()
+    if bool(audio.get("available")):
+        reasons = {
+            "usable": "Gemma 4 12B Unified analyzed the selected audio window with the video frames; caption-safe audio facts were available.",
+            "uncertain": "Gemma 4 12B Unified analyzed the selected audio window, but the audio result remained uncertain and supplied no caption-safe facts.",
+            "silent": "Gemma 4 12B Unified analyzed the selected audio window and classified it as silent for caption grounding.",
+            "failed": "Gemma 4 12B Unified received the selected audio window, but audio analysis failed safely and supplied no caption-safe facts.",
+        }
+        return "gemma-4-12b-unified", reasons.get(status, "Gemma 4 12B Unified analyzed the selected audio window with the video frames.")
+    return "gemma-4-26b-a4b", "Gemma 4 26B A4B produced visual-only evidence because no audio window was sent to the evidence model."
+
+
+def _visual_evidence_available(evidence: Mapping[str, Any]) -> bool:
+    for key in ("scene", "main_subjects", "actions", "setting", "visible_objects", "camera_notes", "temporal_progression", "verified_description"):
+        value = evidence.get(key)
+        if isinstance(value, list) and any(str(item).strip() for item in value):
+            return True
+        if not isinstance(value, (list, Mapping)) and str(value or "").strip():
+            return True
+    return False
 
 
 def _strings(value: Any) -> list[str]:

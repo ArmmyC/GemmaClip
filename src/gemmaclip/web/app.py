@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from collections.abc import Mapping
 
 from fastapi import FastAPI, Request
@@ -29,7 +30,16 @@ def create_app(
     active_services = services or WebServices(active_storage, env=values)
     active_jobs = jobs or JobManager(active_storage, active_services)
 
-    app = FastAPI(title="GemmaClip Web API", version="0.1.0", docs_url="/api/docs", redoc_url=None)
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        active_storage.recover_interrupted_runs()
+        active_storage.cleanup_expired_runs(active_jobs.active_run_ids())
+        try:
+            yield
+        finally:
+            active_jobs.close()
+
+    app = FastAPI(title="GemmaClip Web API", version="0.1.0", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
     app.state.storage = active_storage
     app.state.services = active_services
     app.state.jobs = active_jobs

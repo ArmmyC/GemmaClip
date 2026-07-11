@@ -3,7 +3,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { UploadDropzone } from "@/components/UploadDropzone";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Sparkles, Layers, Waves, Cpu, MessageSquareText } from "lucide-react";
-import { api } from "@/lib/api";
+import { startQuickUpload } from "@/lib/quick-flow";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
@@ -21,9 +21,7 @@ function Landing() {
     if (!file) { setError("Choose a video first."); return; }
     setBusy(true); setError(null);
     try {
-      const run = await api.createRun(file);
-      await api.startQuickCaption(run.id);
-      navigate({ to: "/quick", search: { runId: run.id } as never });
+      await startQuickUpload(file, (id) => navigate({ to: "/quick", search: { runId: id } as never }));
     } catch (e) { setError(e instanceof Error ? e.message : "Upload failed."); }
     finally { setBusy(false); }
   }

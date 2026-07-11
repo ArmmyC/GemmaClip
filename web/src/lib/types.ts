@@ -144,12 +144,13 @@ export interface Caption {
   wordCount: number;
   charCount: number;
   status: "valid" | "repaired";
-  evidenceUsed: {
-    visualScene: boolean;
-    visibleAction: boolean;
-    allowedAudioFact: boolean;
+  groundingContext: {
+    visualEvidenceAvailable: boolean;
+    audioEvidenceAvailable: boolean;
   };
 }
+
+export type GenerationOutcome = "model_generated" | "evidence_fallback" | "deterministic_fallback";
 
 export interface Experiment {
   id: string;
@@ -180,6 +181,8 @@ export interface Run {
   activeStage?: StageId | null;
   progressMessage?: string | null;
   error?: string | null;
+  generationOutcome: GenerationOutcome | null;
+  degraded: boolean;
 }
 
 export interface RunStatusResponse {
@@ -189,6 +192,8 @@ export interface RunStatusResponse {
   progressMessage?: string | null;
   stages: Record<StageId, StageState>;
   error?: string | null;
+  generationOutcome: GenerationOutcome | null;
+  degraded: boolean;
 }
 
 export interface ProgressEvent {

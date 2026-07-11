@@ -4,6 +4,8 @@ GemmaClip has two independent surfaces: the Track 2 leaderboard CLI and an optio
 
 See [docs/WEB_DEVELOPMENT.md](docs/WEB_DEVELOPMENT.md) for installation, environment variables, run storage, validation, and intentionally deferred Lab controls.
 
+Web runs record whether captions were `model_generated`, produced through an `evidence_fallback`, or rejected as a `deterministic_fallback`. Evidence fallbacks remain inspectable with a degraded-result notice; deterministic fallback is never presented as successful Gemma output. Demo run retention defaults to 24 hours and is configurable with `GEMMACLIP_WEB_RUN_TTL_SECONDS`.
+
 GemmaClip is a Track 2 AMD Developer Hackathon video captioning agent. It reads `/input/tasks.json`, downloads each video, probes metadata with `ffprobe`, extracts representative frames with `AKS-lite`, builds factual evidence, generates styled captions, optionally verifies them, and writes `/output/results.json`.
 
 ## Runtime limit

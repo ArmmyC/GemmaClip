@@ -35,6 +35,17 @@ export const api = {
   postExperiment: (_id: string, _config: unknown): Promise<Run> => Promise.reject(new ApiError("Experiment storage is coming in the next integration phase.", 501)),
 };
 
+export async function createAndStartQuickRun(file: File): Promise<Run> {
+  const created = await api.createRun(file);
+  try {
+    await api.startQuickCaption(created.id);
+  } catch (error) {
+    await api.deleteRun(created.id).catch(() => undefined);
+    throw error;
+  }
+  return created;
+}
+
 export async function waitForRun(id: string, options: { intervalMs?: number; signal?: AbortSignal; onStatus?: (s: RunStatusResponse) => void } = {}): Promise<Run> {
   const interval = options.intervalMs ?? 1000;
   for (;;) {

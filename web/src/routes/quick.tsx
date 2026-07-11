@@ -6,7 +6,9 @@ import { UploadDropzone } from "@/components/UploadDropzone";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
 import { CaptionCard } from "@/components/CaptionCard";
 import { Button } from "@/components/ui/button";
+import { GenerationOutcomeNotice } from "@/components/GenerationOutcomeNotice";
 import { api, mediaUrl, waitForRun } from "@/lib/api";
+import { startQuickUpload } from "@/lib/quick-flow";
 import type { Run, RunStatusResponse } from "@/lib/types";
 
 type Search = { runId?: string };
@@ -30,7 +32,7 @@ function QuickCaption() {
 
   async function handleFile(file: File) {
     setUploading(true); setError(null); setRun(null);
-    try { const created = await api.createRun(file); await api.startQuickCaption(created.id); await navigate({ to: "/quick", search: { runId: created.id }, replace: true }); }
+    try { await startQuickUpload(file, (id) => navigate({ to: "/quick", search: { runId: id }, replace: true })); }
     catch (e) { setError(e instanceof Error ? e.message : "Upload failed."); } finally { setUploading(false); }
   }
 
@@ -42,7 +44,7 @@ function QuickCaption() {
     {uploading && <p className="mt-4 text-sm text-muted-foreground">Uploading video securely…</p>}
     {runId && !run && !error && <ProcessingStatus steps={STEPS} active={status?.progressMessage ?? "Inspecting video"} />}
     {error && <div role="alert" className="rounded-xl border border-destructive/40 bg-card p-5"><h2 className="font-display text-2xl">Could not create captions</h2><p className="mt-2 text-sm text-muted-foreground">{error}</p><Button className="mt-4" variant="outline" onClick={() => navigate({ to: "/quick", search: {}, replace: true })}>Choose another video</Button></div>}
-    {run && <div className="space-y-8"><div className="grid gap-6 md:grid-cols-[1.4fr_1fr]"><video className="aspect-video w-full rounded-xl border border-border bg-ink" controls src={mediaUrl(run.id)} aria-label={`Uploaded video ${run.video.filename}`} /><div className="flex flex-col justify-between rounded-xl border border-border bg-card p-5"><div><div className="font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground">result</div><div className="mt-1 font-display text-2xl">{run.captions.results.length} captions ready</div><p className="mt-2 text-sm text-muted-foreground">Grounded through {run.evidence.result.selectedRoute}.</p></div><div className="mt-6 flex gap-2"><Button variant="outline" size="sm" onClick={download}><Download className="mr-1 h-3.5 w-3.5"/>Download JSON</Button><Button variant="ghost" size="sm" onClick={() => navigate({ to: "/quick", search: {}, replace: true })}><RefreshCw className="mr-1 h-3.5 w-3.5"/>Generate again</Button></div></div></div>
+    {run && <div className="space-y-8"><GenerationOutcomeNotice outcome={run.generationOutcome} /><div className="grid gap-6 md:grid-cols-[1.4fr_1fr]"><video className="aspect-video w-full rounded-xl border border-border bg-ink" controls src={mediaUrl(run.id)} aria-label={`Uploaded video ${run.video.filename}`} /><div className="flex flex-col justify-between rounded-xl border border-border bg-card p-5"><div><div className="font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground">result</div><div className="mt-1 font-display text-2xl">{run.captions.results.length} captions ready</div><p className="mt-2 text-sm text-muted-foreground">Grounded through {run.evidence.result.selectedRoute}.</p></div><div className="mt-6 flex gap-2"><Button variant="outline" size="sm" onClick={download}><Download className="mr-1 h-3.5 w-3.5"/>Download JSON</Button><Button variant="ghost" size="sm" onClick={() => navigate({ to: "/quick", search: {}, replace: true })}><RefreshCw className="mr-1 h-3.5 w-3.5"/>Generate again</Button></div></div></div>
       <div className="grid gap-4 md:grid-cols-2">{run.captions.results.map(c => <CaptionCard key={c.id} caption={c}/>)}</div>
       <div className="rounded-xl border border-dashed border-ember/50 bg-ember-soft/40 p-5"><div className="flex items-center justify-between gap-3"><div><div className="font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground">want to see how it worked?</div><div className="mt-1 font-display text-2xl">Open this run in Gemma Lab</div></div><Button asChild><Link to="/lab/$runId/video" params={{ runId: run.id }}><Beaker className="mr-2 h-4 w-4"/>Inspect pipeline <ArrowRight className="ml-2 h-4 w-4"/></Link></Button></div></div>
     </div>}

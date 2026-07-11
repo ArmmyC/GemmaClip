@@ -5,7 +5,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse
 
-from gemmaclip.web.jobs import JobAlreadyRunning, JobManager
+from gemmaclip.web.adapters import backend_style_to_frontend
+from gemmaclip.web.jobs import JobAlreadyRunning, JobManager, JobManagerClosed
 from gemmaclip.web.media import UploadValidationError, media_type_for_path, validate_upload_name
 from gemmaclip.web.models import ConfigResponse, HealthResponse, PresetRequest, RunResponse, StatusResponse
 from gemmaclip.web.services import DEFAULT_STYLES, WebConfigurationError, WebPipelineError, WebServices
@@ -28,14 +29,15 @@ def create_api_router() -> APIRouter:
         return ConfigResponse(
             maximum_upload_size=storage.max_upload_bytes,
             supported_video_types=["mp4", "webm", "mov"],
-            available_caption_styles=list(DEFAULT_STYLES),
+            available_caption_styles=[backend_style_to_frontend(style) for style in DEFAULT_STYLES],
             gemma_credentials_configured=services.credentials_configured(),
             audio_mode_available=True,
         )
 
     @router.post("/runs", response_model=RunResponse, status_code=status.HTTP_201_CREATED)
     async def create_run(request: Request, video: UploadFile) -> dict:
-        storage, _, _ = _dependencies(request)
+        storage, _, jobs = _dependencies(request)
+        storage.cleanup_expired_runs(jobs.active_run_ids())
         try:
             suffix = validate_upload_name(video.filename, video.content_type)
         except UploadValidationError as exc:
@@ -77,7 +79,9 @@ def create_api_router() -> APIRouter:
 
     @router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_run(run_id: str, request: Request) -> Response:
-        storage, _, _ = _dependencies(request)
+        storage, _, jobs = _dependencies(request)
+        if jobs.is_active(run_id):
+            raise HTTPException(status_code=409, detail="This run is currently processing and cannot be deleted.")
         storage.delete_run(run_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -96,6 +100,8 @@ def create_api_router() -> APIRouter:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except JobAlreadyRunning as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except JobManagerClosed as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @router.get("/runs/{run_id}/status", response_model=StatusResponse)
     def run_status(run_id: str, request: Request) -> dict:
@@ -108,6 +114,8 @@ def create_api_router() -> APIRouter:
             "progressMessage": run.get("progressMessage"),
             "stages": run["stages"],
             "error": run.get("error"),
+            "generationOutcome": run.get("generationOutcome"),
+            "degraded": bool(run.get("degraded", False)),
         }
 
     @router.get("/runs/{run_id}/media/video")

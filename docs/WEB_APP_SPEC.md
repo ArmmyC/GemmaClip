@@ -2,6 +2,8 @@
 
 > Implementation status (July 2026): `web/` and the optional FastAPI backend implement the real Quick Caption vertical slice and inspection of the completed stored run throughout Gemma Lab. Interactive stage reruns, persisted audio playback, and experiment creation/comparison remain intentionally deferred and disabled; no mock results are substituted. See `docs/WEB_DEVELOPMENT.md`.
 
+> Hardening note: public runs distinguish model generation, grounded evidence fallback, and deterministic fallback. Only the first two may become ready; grounded fallback is visibly degraded. Interrupted processing is recovered as a safe error on restart, expired inactive runs are cleaned according to `GEMMACLIP_WEB_RUN_TTL_SECONDS`, and active runs cannot be deleted. Caption cards describe grounding availability, not unsupported exact per-caption attribution. This remains a single-process demo architecture, not a public-scale job system.
+
 ## 1. Product vision
 
 GemmaClip should be both:
@@ -230,7 +232,7 @@ Each caption card must support:
 
 - copy,
 - regenerate that style,
-- show evidence used,
+- show grounding context availability without claiming exact per-caption use,
 - display model and temperature metadata in a collapsible details section.
 
 Page actions:
@@ -594,10 +596,10 @@ Each result card should show:
 - whether focused repair was used,
 - grounding summary.
 
-Do not claim exact token-level attribution unless the backend records it. A safe grounding summary is:
+Do not claim exact token-level or per-caption attribution unless the backend records it. The current availability summary is:
 
 ```text
-Evidence used: visible scene, action progression, allowed audio fact
+Grounding available: visual evidence, caption-safe audio evidence
 ```
 
 The output must always contain exactly the requested styles. Missing styles must use the existing evidence-based fallback behavior.
@@ -715,7 +717,7 @@ GET /api/config
     "audio_visual_evidence": ["Gemma 4 12B Unified"],
     "captions": ["Gemma 4 31B"]
   },
-  "default_styles": ["formal", "sarcastic", "humorous_tech", "humorous_non_tech"]
+  "default_styles": ["formal", "sarcastic", "humorous-tech", "humorous-non-tech"]
 }
 ```
 
@@ -1118,7 +1120,7 @@ GEMMACLIP_WEB_HOST=0.0.0.0
 GEMMACLIP_WEB_PORT=8000
 GEMMACLIP_WEB_RUN_DIR=.gemmaclip/runs
 GEMMACLIP_WEB_MAX_UPLOAD_BYTES=209715200
-GEMMACLIP_WEB_RUN_TTL_HOURS=24
+GEMMACLIP_WEB_RUN_TTL_SECONDS=86400
 GEMMACLIP_WEB_EXAMPLE_DIR=examples/videos
 ```
 

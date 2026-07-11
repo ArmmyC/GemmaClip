@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from gemmaclip.audio import AudioEvidenceCandidate, AudioSettings, DEFAULT_AUDIO_MIN_REMAINING_SECONDS, cleanup_audio_candidate, load_audio_settings, prepare_audio_candidate, unavailable_audio
 from gemmaclip.frames import ExtractedFrame
@@ -31,6 +31,10 @@ DEFAULT_SINGLE_CALL_TEMPERATURE = 0.4
 VALID_AUDIO_STATUSES = {"usable", "uncertain", "silent", "unavailable", "failed"}
 ALWAYS_UNSUPPORTED_CLAIMS = ["motive", "destination", "occupation", "deadline", "relationship", "off-camera event"]
 CONDITIONAL_AUDIO_CLAIMS = ["sound", "dialogue", "speech", "music", "noise"]
+GENERATION_OUTCOME_MODEL = "model_generated"
+GENERATION_OUTCOME_EVIDENCE_FALLBACK = "evidence_fallback"
+GENERATION_OUTCOME_DETERMINISTIC_FALLBACK = "deterministic_fallback"
+GenerationOutcome = Literal["model_generated", "evidence_fallback", "deterministic_fallback"]
 
 
 class RoutedRuntimeBudgetError(RuntimeError):
@@ -84,17 +88,18 @@ def generate_routed_captions(
     debug_dir: str | Path | None = None,
     logger: logging.Logger | None = None,
     stage_callback: Callable[[str], None] | None = None,
+    outcome_callback: Callable[[GenerationOutcome], None] | None = None,
 ) -> dict[str, str]:
     from gemmaclip.captioner import build_evidence_based_captions, build_fallback_captions, cleanup_caption
 
     active_logger = logger or LOGGER
     if not config.has_credentials:
         active_logger.warning("task_id=%s operation=config route=fallback provider=routed_gemma model=none attempt=0 status=missing_credentials elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=0 fallback_used=true audio_available=false audio_selected=false audio_window_seconds=0", task.task_id, remaining_time_fn())
-        return build_fallback_captions(task.styles)
+        return _return_with_outcome(build_fallback_captions(task.styles), outcome_callback, GENERATION_OUTCOME_DETERMINISTIC_FALLBACK)
     selected_frames = list(frames)
     if len(selected_frames) != 6:
         active_logger.warning("task_id=%s operation=frames route=fallback provider=routed_gemma model=none attempt=0 status=invalid_output elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=0 fallback_used=true audio_available=false audio_selected=false audio_window_seconds=0", task.task_id, remaining_time_fn())
-        return build_fallback_captions(task.styles)
+        return _return_with_outcome(build_fallback_captions(task.styles), outcome_callback, GENERATION_OUTCOME_DETERMINISTIC_FALLBACK)
 
     stage_settings = load_routed_stage_settings(env)
     remaining = remaining_time_fn()
@@ -103,12 +108,12 @@ def generate_routed_captions(
             active_logger, task.task_id, "single_call", "visual", remaining,
             SINGLE_CALL_MIN_SECONDS, unavailable_audio(16_000, "runtime unsafe"), False,
         )
-        return build_fallback_captions(task.styles)
+        return _return_with_outcome(build_fallback_captions(task.styles), outcome_callback, GENERATION_OUTCOME_DETERMINISTIC_FALLBACK)
     if remaining < TWO_CALL_VISUAL_MIN_SECONDS:
         _notify_stage(stage_callback, "writing_captions")
         return _single_visual_caption_call(
             task, selected_frames, config, client_factory, remaining_time_fn,
-            active_logger, temperature=stage_settings.single_call_temperature,
+            active_logger, temperature=stage_settings.single_call_temperature, outcome_callback=outcome_callback,
         )
 
     settings = load_audio_settings(env)
@@ -130,13 +135,13 @@ def generate_routed_captions(
             remaining_after_audio, SINGLE_CALL_MIN_SECONDS, audio, False,
         )
         cleanup_audio_candidate(audio)
-        return build_fallback_captions(task.styles)
+        return _return_with_outcome(build_fallback_captions(task.styles), outcome_callback, GENERATION_OUTCOME_DETERMINISTIC_FALLBACK)
     if remaining_after_audio < TWO_CALL_VISUAL_MIN_SECONDS:
         cleanup_audio_candidate(audio)
         _notify_stage(stage_callback, "writing_captions")
         return _single_visual_caption_call(
             task, selected_frames, config, client_factory, remaining_time_fn,
-            active_logger, temperature=stage_settings.single_call_temperature,
+            active_logger, temperature=stage_settings.single_call_temperature, outcome_callback=outcome_callback,
         )
     decision = decide_evidence_route(settings, audio, remaining_after_audio)
     _log_route(active_logger, task.task_id, decision, audio, remaining_after_audio, settings.min_remaining_seconds)
@@ -161,11 +166,11 @@ def generate_routed_captions(
         if debug_dir is not None:
             _write_debug(debug_dir, task.task_id, "evidence", evidence)
     except RoutedRuntimeBudgetError:
-        return build_fallback_captions(task.styles)
+        return _return_with_outcome(build_fallback_captions(task.styles), outcome_callback, GENERATION_OUTCOME_DETERMINISTIC_FALLBACK)
     except Exception as exc:
         status = "invalid_output" if isinstance(exc, ValueError) else "failed"
         active_logger.warning("task_id=%s operation=evidence route=%s provider=routed_gemma model=role_configured attempt=0 status=%s elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=%.3f fallback_used=true audio_available=%s audio_selected=%s audio_window_seconds=%.3f error=%s", task.task_id, decision.route, status, remaining_time_fn(), EVIDENCE_ATTEMPT_MIN_SECONDS, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds, type(exc).__name__)
-        return build_fallback_captions(task.styles)
+        return _return_with_outcome(build_fallback_captions(task.styles), outcome_callback, GENERATION_OUTCOME_DETERMINISTIC_FALLBACK)
     finally:
         cleanup_audio_candidate(audio)
 
@@ -175,7 +180,7 @@ def generate_routed_captions(
             active_logger, task.task_id, "caption", "caption",
             remaining_before_final, FINAL_SYNTHESIS_MIN_SECONDS, audio, decision.use_audio,
         )
-        return build_evidence_based_captions(task.styles, evidence)
+        return _return_with_outcome(build_evidence_based_captions(task.styles, evidence), outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
 
     try:
         _notify_stage(stage_callback, "writing_captions")
@@ -192,12 +197,13 @@ def generate_routed_captions(
             audio_selected=decision.use_audio,
         )
     except RoutedRuntimeBudgetError:
-        return build_evidence_based_captions(task.styles, evidence)
+        return _return_with_outcome(build_evidence_based_captions(task.styles, evidence), outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
     except Exception as exc:
         active_logger.warning("task_id=%s operation=caption route=caption provider=routed_gemma model=role_configured attempt=0 status=failed elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=%.3f fallback_used=true audio_available=%s audio_selected=%s audio_window_seconds=%.3f error=%s", task.task_id, remaining_time_fn(), FINAL_SYNTHESIS_MIN_SECONDS, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds, type(exc).__name__)
-        return build_evidence_based_captions(task.styles, evidence)
+        return _return_with_outcome(build_evidence_based_captions(task.styles, evidence), outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
 
     captions = _extract_valid_partial_captions(caption_text, task.styles, evidence)
+    model_generated_styles = set(captions)
     missing_styles = [style for style in task.styles if style not in captions]
     if missing_styles:
         _log_invalid_output(
@@ -221,6 +227,7 @@ def generate_routed_captions(
                 )
                 repaired_captions = _extract_valid_partial_captions(repair_text, missing_styles, evidence)
                 captions.update(repaired_captions)
+                model_generated_styles.update(repaired_captions)
                 if any(style not in repaired_captions for style in missing_styles):
                     _log_invalid_output(
                         active_logger, task.task_id, "focused_repair", remaining_time_fn(),
@@ -240,7 +247,8 @@ def generate_routed_captions(
     captions = {style: cleanup_caption(captions[style], style, evidence) for style in task.styles}
     if debug_dir is not None:
         _write_debug(debug_dir, task.task_id, "captions", captions)
-    return captions
+    outcome = GENERATION_OUTCOME_MODEL if model_generated_styles else GENERATION_OUTCOME_EVIDENCE_FALLBACK
+    return _return_with_outcome(captions, outcome_callback, outcome)
 
 
 def build_evidence_messages(task_id: str, frames: Sequence[ExtractedFrame], audio: AudioEvidenceCandidate, decision: RouteDecision, *, google: bool) -> list[dict[str, Any]]:
@@ -374,6 +382,7 @@ def empty_evidence() -> dict[str, Any]:
 
 def _single_visual_caption_call(
     task, frames, config, client_factory, remaining_time_fn, logger, *, temperature: float,
+    outcome_callback: Callable[[GenerationOutcome], None] | None = None,
 ):
     from gemmaclip.captioner import build_fallback_captions, extract_caption_json, normalize_captions
     evidence = empty_evidence()
@@ -390,9 +399,10 @@ def _single_visual_caption_call(
             audio=unavailable_audio(16_000, "single-call visual path"),
             audio_selected=False,
         )
-        return normalize_captions(extract_caption_json(text, task.styles), task.styles, evidence)
+        captions = normalize_captions(extract_caption_json(text, task.styles), task.styles, evidence)
+        return _return_with_outcome(captions, outcome_callback, GENERATION_OUTCOME_MODEL)
     except Exception:
-        return build_fallback_captions(task.styles)
+        return _return_with_outcome(build_fallback_captions(task.styles), outcome_callback, GENERATION_OUTCOME_DETERMINISTIC_FALLBACK)
 
 
 def _call_role_with_fallback(
@@ -552,3 +562,16 @@ def _log_route(logger, task_id, decision, audio, remaining_seconds, minimum_rema
 def _notify_stage(callback: Callable[[str], None] | None, stage: str) -> None:
     if callback is not None:
         callback(stage)
+
+
+def _return_with_outcome(
+    captions: dict[str, str],
+    callback: Callable[[GenerationOutcome], None] | None,
+    outcome: GenerationOutcome,
+) -> dict[str, str]:
+    if callback is not None:
+        try:
+            callback(outcome)
+        except Exception as exc:
+            LOGGER.warning("operation=outcome_callback status=failed error=%s", type(exc).__name__)
+    return captions

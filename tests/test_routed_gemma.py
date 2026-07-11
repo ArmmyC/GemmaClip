@@ -32,6 +32,9 @@ from gemmaclip.routed import (
     generate_routed_captions,
     load_routed_stage_settings,
     _call_role_with_fallback,
+    GENERATION_OUTCOME_DETERMINISTIC_FALLBACK,
+    GENERATION_OUTCOME_EVIDENCE_FALLBACK,
+    GENERATION_OUTCOME_MODEL,
 )
 
 
@@ -181,9 +184,11 @@ def test_normal_successful_routed_path_uses_exactly_two_model_calls(tmp_path):
         def chat_completion_text(self, messages, temperature, **kwargs):
             calls.append(self.model_config.model)
             return responses.pop(0)
-    captions = generate_routed_captions(task, _frames(tmp_path), tmp_path / "video.mp4", config=config, env={"GEMMACLIP_AUDIO_MODE": "off"}, client_factory=Client, remaining_time_fn=lambda: 500.0)
+    outcomes = []
+    captions = generate_routed_captions(task, _frames(tmp_path), tmp_path / "video.mp4", config=config, env={"GEMMACLIP_AUDIO_MODE": "off"}, client_factory=Client, remaining_time_fn=lambda: 500.0, outcome_callback=outcomes.append)
     assert set(captions) == {"formal", "sarcastic"}
     assert calls == [config.google_visual_model, config.google_caption_model]
+    assert outcomes == [GENERATION_OUTCOME_MODEL]
 
 
 def test_final_failure_after_evidence_uses_grounded_evidence_fallback(tmp_path):
@@ -195,10 +200,12 @@ def test_final_failure_after_evidence_uses_grounded_evidence_fallback(tmp_path):
             if self.model_config.model == config.google_visual_model:
                 return '{"main_subjects":["a worker"],"actions":["standing beside a desk"],"setting":"an office","visible_objects":["a computer"]}'
             raise RuntimeError("caption endpoint failed")
-    captions = generate_routed_captions(task, _frames(tmp_path), tmp_path / "video.mp4", config=config, env={"GEMMACLIP_AUDIO_MODE": "off"}, client_factory=Client, remaining_time_fn=lambda: 500.0)
+    outcomes = []
+    captions = generate_routed_captions(task, _frames(tmp_path), tmp_path / "video.mp4", config=config, env={"GEMMACLIP_AUDIO_MODE": "off"}, client_factory=Client, remaining_time_fn=lambda: 500.0, outcome_callback=outcomes.append)
     assert "worker" in captions["formal"]
     assert "standing beside a desk" in captions["formal"]
     assert "fully processed" not in captions["formal"]
+    assert outcomes == [GENERATION_OUTCOME_EVIDENCE_FALLBACK]
 
 
 def test_both_providers_failing_evidence_returns_safe_fallback_without_secret_logs(tmp_path, caplog):
@@ -207,8 +214,10 @@ def test_both_providers_failing_evidence_returns_safe_fallback_without_secret_lo
     class Client:
         def __init__(self, model_config): self.model_config = model_config
         def chat_completion_text(self, *args, **kwargs): raise RuntimeError("request failed")
-    captions = generate_routed_captions(task, _frames(tmp_path), tmp_path / "video.mp4", config=config, env={"GEMMACLIP_AUDIO_MODE": "off"}, client_factory=Client, remaining_time_fn=lambda: 500.0)
+    outcomes = []
+    captions = generate_routed_captions(task, _frames(tmp_path), tmp_path / "video.mp4", config=config, env={"GEMMACLIP_AUDIO_MODE": "off"}, client_factory=Client, remaining_time_fn=lambda: 500.0, outcome_callback=outcomes.append)
     assert captions == build_fallback_captions(task.styles)
+    assert outcomes == [GENERATION_OUTCOME_DETERMINISTIC_FALLBACK]
     assert "secret-fireworks" not in caplog.text
     assert "secret-google" not in caplog.text
     assert "base64" not in caplog.text
@@ -474,13 +483,30 @@ def test_single_call_uses_configured_temperature_and_no_evidence_call(tmp_path):
         def chat_completion_text(self, messages, temperature, **kwargs):
             temperatures.append(temperature)
             return '{"formal":"A person walks across a room while the visible furnishings remain still throughout this brief and straightforward indoor clip."}'
+    outcomes = []
     captions = generate_routed_captions(
         task, _frames(tmp_path), tmp_path / "video.mp4", config=config,
         env={"GEMMACLIP_ROUTED_SINGLE_CALL_TEMPERATURE": "0.9"},
-        client_factory=Client, remaining_time_fn=lambda: 100.0,
+        client_factory=Client, remaining_time_fn=lambda: 100.0, outcome_callback=outcomes.append,
     )
     assert temperatures == [0.9]
     assert set(captions) == {"formal"}
+    assert outcomes == [GENERATION_OUTCOME_MODEL]
+
+
+def test_failed_single_call_reports_deterministic_fallback(tmp_path):
+    task = Task("v1", "https://example.com/v.mp4", ("formal",))
+    config = load_gemma_config({"GEMMACLIP_PROVIDER": "routed_gemma", "GOOGLE_API_KEY": "google"})
+    outcomes = []
+    class Client:
+        def __init__(self, model_config): self.model_config = model_config
+        def chat_completion_text(self, *args, **kwargs): raise RuntimeError("provider failed")
+    captions = generate_routed_captions(
+        task, _frames(tmp_path), tmp_path / "video.mp4", config=config, env={},
+        client_factory=Client, remaining_time_fn=lambda: 100.0, outcome_callback=outcomes.append,
+    )
+    assert captions == build_fallback_captions(task.styles)
+    assert outcomes == [GENERATION_OUTCOME_DETERMINISTIC_FALLBACK]
 
 
 def test_temperature_parsing_defaults_clamps_and_rejects_nonfinite_values():
