@@ -3,6 +3,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { PipelineStepper } from "@/components/PipelineStepper";
 import { useRun } from "@/lib/hooks";
 import { ErrorState } from "@/components/StateViews";
+import { LabRunContent } from "@/components/LabRunContent";
 
 export const Route = createFileRoute("/lab/$runId")({
   component: LabLayout,
@@ -28,7 +29,9 @@ function LabLayout() {
             description={String((error as Error).message)}
           />
         )}
-        {run && <Outlet />}
+        <LabRunContent run={run}>
+          <Outlet />
+        </LabRunContent>
       </main>
     </div>
   );
