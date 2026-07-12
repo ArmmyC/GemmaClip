@@ -34,7 +34,7 @@ export function FrameCard({ frame, onToggle, className }: Props) {
     <div
       className={cn(
         "group overflow-hidden rounded-xl border border-white/10 bg-card transition-colors hover:border-white/20",
-        included && "ring-1 ring-transparent hover:ring-ember/60",
+        included && "ring-1 ring-ember/20 hover:ring-ember/60",
         !included && "opacity-50 grayscale",
         className,
       )}
@@ -44,8 +44,8 @@ export function FrameCard({ frame, onToggle, className }: Props) {
         <Dialog>
           <DialogTrigger asChild>
             <button
-              className="absolute right-2 top-2 rounded-md bg-ink/60 p-1.5 text-paper opacity-0 backdrop-blur transition group-hover:opacity-100"
-              aria-label="Preview full size"
+              className="absolute right-2 top-2 rounded-md bg-ink/70 p-1.5 text-paper opacity-0 backdrop-blur transition hover:bg-ink focus-visible:opacity-100 group-hover:opacity-100"
+              aria-label={`Preview frame ${frame.index} full size`}
             >
               <Maximize2 className="h-3.5 w-3.5" />
             </button>

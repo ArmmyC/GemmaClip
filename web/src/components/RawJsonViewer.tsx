@@ -17,7 +17,9 @@ export function RawJsonViewer({ data, className, defaultOpen = false }: Props) {
       <button
         onClick={() => setOpen((o) => !o)}
         type="button"
-        className="flex min-h-12 w-full items-center justify-between px-4 py-3 text-left hover:bg-white/[0.03]"
+        aria-expanded={open}
+        aria-controls="structured-evidence-json"
+        className="flex min-h-12 w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-white/[0.03]"
       >
         <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
           raw · structured evidence
@@ -27,11 +29,12 @@ export function RawJsonViewer({ data, className, defaultOpen = false }: Props) {
         />
       </button>
       {open && (
-        <div className="relative border-t border-white/10 bg-background">
+        <div id="structured-evidence-json" className="relative border-t border-white/10 bg-background">
           <Button
             variant="ghost"
             size="sm"
             className="absolute right-2 top-2 gap-1.5 font-mono text-[11px]"
+            aria-label="Copy structured evidence JSON"
             onClick={() => navigator.clipboard?.writeText(text)}
           >
             <Copy className="h-3 w-3" /> copy

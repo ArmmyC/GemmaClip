@@ -90,7 +90,7 @@ function AudioStage() {
           title="Audio configuration"
           description="Choose how GemmaClip inspects a bounded energy candidate."
           actions={
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button variant="ghost" size="sm" onClick={() => { setMode(run.audio.config.mode); setMaxDur(run.audio.config.maxDurationSec); setRate(String(run.audio.config.sampleRateHz)); setMinRms(run.audio.config.minRmsEnergy); setStrategy(run.audio.config.strategy); }} disabled={busy || !dirty}>Reset</Button>
               <Button size="sm" className="gap-1.5" onClick={apply} disabled={busy || run.stages.video !== "complete" || (!dirty && run.stages.audio === "complete")}>
               {busy ? <RotateCw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}

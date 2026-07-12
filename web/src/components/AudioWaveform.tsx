@@ -13,8 +13,8 @@ export function AudioWaveform({ segment, durationSec, className }: Props) {
   const endPct = (segment.endSec / durationSec) * 100;
 
   return (
-    <div className={cn("glass-panel rounded-xl p-4", className)}>
-      <div className="mb-3 flex items-center justify-between font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+    <div className={cn("glass-panel rounded-xl p-4", className)} role="img" aria-label={`Audio waveform with selected ${segment.endSec - segment.startSec} second window`}>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
         <span>waveform · {durationSec.toFixed(1)}s</span>
         <span>rms {segment.rms.toFixed(3)}</span>
       </div>
@@ -25,7 +25,7 @@ export function AudioWaveform({ segment, durationSec, className }: Props) {
         />
         <div className="absolute inset-0 z-10 flex items-center gap-[2px] px-2">
           {waveform.map((v, i) => {
-            const inside = i / waveform.length >= startPct / 100 && i / waveform.length <= endPct / 100;
+            const inside = waveform.length > 0 && i / waveform.length >= startPct / 100 && i / waveform.length <= endPct / 100;
             return (
               <span
                 key={i}
@@ -43,7 +43,7 @@ export function AudioWaveform({ segment, durationSec, className }: Props) {
           style={{ left: `${startPct}%`, width: `${endPct - startPct}%` }}
         />
       </div>
-      <div className="mt-3 flex items-center justify-between font-mono text-xs text-muted-foreground">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 font-mono text-xs text-muted-foreground">
         <span>selected {segment.startSec.toFixed(2)}s → {segment.endSec.toFixed(2)}s</span>
         <span>{(segment.endSec - segment.startSec).toFixed(2)}s window</span>
       </div>

@@ -1,16 +1,20 @@
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
-import { CircleDashed, AlertTriangle } from "lucide-react";
+import { CircleDashed, AlertTriangle, Loader2 } from "lucide-react";
 import type { StageId } from "@/lib/types";
 
 export function ProcessingState({ description = "GemmaClip is still preparing this stage. It will update automatically." }: { description?: ReactNode }) {
   return (
-    <div className="glass-panel rounded-xl p-8" role="status" aria-live="polite">
-      <div className="h-px overflow-hidden bg-white/10">
+    <div className="glass-panel rounded-xl p-6 sm:p-8" role="status" aria-live="polite">
+      <div className="flex items-center gap-3">
+        <Loader2 className="h-4 w-4 animate-spin text-ember motion-reduce:animate-none" aria-hidden="true" />
+        <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Stage in progress</div>
+      </div>
+      <div className="mt-4 font-display text-xl">Processing this stage</div>
+      <p className="mt-2 max-w-lg text-sm text-muted-foreground">{description}</p>
+      <div className="mt-6 h-px overflow-hidden bg-white/10">
         <div className="h-full w-2/5 animate-pulse rounded-full bg-ember motion-reduce:animate-none" />
       </div>
-      <div className="mt-5 font-display text-xl">Processing this stage</div>
-      <p className="mt-2 max-w-lg text-sm text-muted-foreground">{description}</p>
     </div>
   );
 }
@@ -29,7 +33,7 @@ export function EmptyState({
   return (
     <div
       className={cn(
-        "flex flex-col items-center justify-center rounded-xl border border-dashed border-white/15 bg-card/50 p-10 text-center",
+        "flex min-h-48 flex-col items-center justify-center rounded-xl border border-dashed border-white/15 bg-card/50 p-8 text-center",
         className,
       )}
     >
@@ -57,7 +61,7 @@ export function ErrorState({
   return (
     <div
       className={cn(
-        "flex flex-col items-center justify-center rounded-xl border border-danger/35 bg-danger/5 p-10 text-center",
+        "flex min-h-48 flex-col items-center justify-center rounded-xl border border-danger/35 bg-danger/5 p-8 text-center",
         className,
       )}
     >
@@ -94,7 +98,7 @@ export function StaleStageNotice({
 }: {
   message?: string;
 }) {
-  return <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-warning" role="status">{message}</div>;
+  return <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5 text-sm text-warning" role="status"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" /><span>{message}</span></div>;
 }
 
 const DEPENDENTS: Record<Extract<StageId, "frames" | "audio" | "evidence" | "captions">, StageId[]> = {
@@ -115,8 +119,9 @@ const LABELS: Record<StageId, string> = {
 
 export function InvalidationPreview({ stage }: { stage: Extract<StageId, "frames" | "audio" | "evidence" | "captions"> }) {
   return (
-    <div className="rounded-lg border border-warning/25 bg-warning/[0.04] px-3 py-2 text-sm text-warning" role="status">
-      Running {LABELS[stage]} will refresh: {DEPENDENTS[stage].map((item) => LABELS[item]).join(", ")}.
+    <div className="flex items-start gap-2.5 rounded-lg border border-warning/25 bg-warning/[0.04] px-3 py-2.5 text-sm text-warning" role="status">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+      <span>Running {LABELS[stage]} will refresh: {DEPENDENTS[stage].map((item) => LABELS[item]).join(", ")}.</span>
     </div>
   );
 }

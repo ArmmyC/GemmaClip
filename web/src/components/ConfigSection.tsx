@@ -21,13 +21,13 @@ export function ConfigSection({
   return (
     <section
       className={cn(
-        "glass-panel rounded-xl p-5",
+        "glass-panel rounded-xl p-4 sm:p-5",
         tone === "lab" && "border-lab/25 bg-lab-soft/5",
         tone === "ember" && "border-ember/25 bg-ember-soft/5",
         className,
       )}
     >
-      <header className="mb-4 flex items-start justify-between gap-4">
+      <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div>
           <h3 className="font-display text-xl leading-tight tracking-tight">{title}</h3>
           {description && (
@@ -36,9 +36,9 @@ export function ConfigSection({
             </p>
           )}
         </div>
-        {actions && <div className="shrink-0">{actions}</div>}
+        {actions && <div className="w-full shrink-0 sm:w-auto">{actions}</div>}
       </header>
-      <div className="space-y-4">{children}</div>
+      <div className="space-y-5">{children}</div>
     </section>
   );
 }

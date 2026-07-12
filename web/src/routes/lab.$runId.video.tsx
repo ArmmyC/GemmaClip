@@ -82,7 +82,7 @@ function VideoStage() {
             title="Processing preset"
           description="Inspect the preset that seeded this run."
             actions={
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button variant="ghost" onClick={() => setPreset(run.preset)} disabled={busy || !dirty} size="sm">Reset</Button>
               <Button onClick={runPreset} disabled={busy || !dirty} size="sm" className="gap-1.5" title="Apply this preset and invalidate downstream stages">
               <RotateCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} /> Apply preset
@@ -153,16 +153,16 @@ export function StageHeader({
   description?: string;
 }) {
   return (
-    <header className="mb-8 max-w-3xl">
-      <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-        <span className="h-px w-6 bg-ember" aria-hidden="true" />
+    <header className="mb-7 max-w-3xl sm:mb-9">
+      <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+        <span className="h-px w-8 bg-ember" aria-hidden="true" />
         {eyebrow}
       </div>
-      <h1 className="mt-3 font-display text-4xl font-semibold leading-[1.02] tracking-[-0.045em] text-balance md:text-5xl">
+      <h1 className="mt-3 font-display text-3xl font-semibold leading-[1.03] tracking-[-0.035em] text-balance sm:text-4xl md:text-5xl">
         {title}
       </h1>
       {description && (
-        <p className="mt-3 text-pretty text-muted-foreground">{description}</p>
+        <p className="mt-4 max-w-2xl text-pretty text-sm leading-7 text-muted-foreground sm:text-base">{description}</p>
       )}
     </header>
   );

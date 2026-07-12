@@ -112,7 +112,7 @@ function EvidenceStage() {
           title="Evidence config"
           description="Choose the Gemma evidence route. No secrets, API keys, or hidden chain-of-thought are surfaced."
           actions={
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button variant="ghost" size="sm" onClick={() => { setRoute(run.evidence.config.route); setTemp(run.evidence.config.temperature); setMaxTokens(run.evidence.config.maxTokens); }} disabled={busy || !dirty}>Reset</Button>
               <Button size="sm" className="gap-1.5" onClick={apply} disabled={busy || run.stages.frames !== "complete" || (!dirty && run.stages.evidence === "complete")}>
               {busy ? <RotateCw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}

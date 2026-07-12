@@ -24,18 +24,18 @@ export function RouteDecision({ selected, reason, auto, audio, className, provid
   const visualOnly = modality === "visual" || (modality === undefined && selected !== "gemma-4-12b-unified");
   return (
     <section className={cn("glass-panel overflow-hidden rounded-xl", className)} aria-label="Route decision">
-      <div className="border-b border-white/10 px-5 py-4">
+      <div className="border-b border-white/10 px-4 py-4 sm:px-5">
         <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground"><GitBranch className="h-3.5 w-3.5 text-ember" /> Route decision</div>
       </div>
-      <div className="grid gap-6 p-5 md:grid-cols-[1fr_auto_1.2fr] md:items-center">
+      <div className="grid gap-5 p-4 sm:p-5 md:grid-cols-[1fr_auto_1.2fr] md:items-center">
         <div>
           <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Provider</div>
-          <div className="mt-2 text-lg font-semibold uppercase tracking-tight">{provider ?? "configured"}</div>
+          <div className="mt-2 break-words text-lg font-semibold uppercase tracking-tight">{provider ?? "configured"}</div>
         </div>
         <div className="hidden h-14 w-px bg-white/10 md:block" aria-hidden="true" />
         <div>
           <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Model / modality</div>
-          <div className="mt-2 text-2xl font-semibold tracking-tight">{model ?? ROUTE_LABEL[selected]}</div>
+          <div className="mt-2 text-xl font-semibold tracking-tight sm:text-2xl">{model ?? ROUTE_LABEL[selected]}</div>
           <div className="mt-3 flex flex-wrap gap-2">
             {auto && <InstrumentLabel>automatic</InstrumentLabel>}
             <InstrumentLabel tone="ember">{visualOnly ? "visual only" : "visual + audio"}</InstrumentLabel>
@@ -45,7 +45,7 @@ export function RouteDecision({ selected, reason, auto, audio, className, provid
           {modality && <div className="mt-3 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">actual modality: {modality.replace("_", " + ")}</div>}
         </div>
       </div>
-      <div className="border-t border-white/10 px-5 py-4">
+      <div className="border-t border-white/10 px-4 py-4 sm:px-5">
         <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Why this route</div>
         <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{reason}</p>
       </div>

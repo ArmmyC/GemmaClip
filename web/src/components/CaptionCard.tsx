@@ -20,7 +20,7 @@ interface Props {
 
 export function CaptionCard({ caption, onRegenerate, onCopy }: Props) {
   return (
-    <article className="group flex flex-col overflow-hidden rounded-xl border border-white/10 bg-card transition-colors hover:border-white/20">
+    <article className="group flex h-full flex-col overflow-hidden rounded-xl border border-white/10 bg-card transition-colors hover:border-white/20">
       <header className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
         <div>
           <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">caption style</div>
@@ -31,7 +31,7 @@ export function CaptionCard({ caption, onRegenerate, onCopy }: Props) {
           {caption.status}
         </div>
       </header>
-      <div className="flex-1 px-5 py-6"><p className="text-pretty text-[17px] leading-[1.65] text-foreground">{caption.text}</p></div>
+      <div className="flex-1 px-5 py-6"><p className="text-pretty text-lg leading-[1.65] text-foreground">{caption.text}</p></div>
       <footer className="space-y-4 border-t border-white/10 px-5 py-4">
         <div>
           <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Grounding available</div>

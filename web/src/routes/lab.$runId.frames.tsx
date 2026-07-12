@@ -94,7 +94,7 @@ function FramesStage() {
           title="Extraction"
           description="Configure how many moments Gemma should see."
           actions={
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button variant="ghost" size="sm" onClick={() => { setMethod(run.frames.config.method); setTotal(run.frames.config.totalFrames); setAnchors(run.frames.config.anchorCount); setHigh(run.frames.config.highChangeCount); setSpacing(run.frames.config.minSpacingSec); setSens(run.frames.config.changeSensitivity); }} disabled={busy || !dirty}>Reset</Button>
               <Button size="sm" className="gap-1.5" onClick={extract} disabled={busy || run.stages.video !== "complete" || (!dirty && run.stages.frames === "complete")}>
               {busy ? (

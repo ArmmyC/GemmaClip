@@ -79,7 +79,7 @@ function CaptionsStage() {
     <div>
       <StageHeader
         eyebrow="stage 05 · captions"
-        title="Write, styled and grounded"
+        title="Write grounded captions"
         description="Captions can only reference facts already established as evidence. Focused repair rewrites lines that stray."
       />
       <GenerationOutcomeNotice outcome={run.generationOutcome} compact />

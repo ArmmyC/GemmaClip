@@ -9,10 +9,21 @@ interface Props {
 }
 
 export function FrameTimeline({ series, frames, durationSec, className }: Props) {
-  const max = Math.max(...series.map((s) => s.score));
+  if (!series.length) {
+    return (
+      <div className={cn("glass-panel rounded-xl border-dashed p-6", className)} role="status">
+        <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Visual change</div>
+        <p className="mt-2 text-sm text-muted-foreground">The change series will appear after frame extraction completes.</p>
+      </div>
+    );
+  }
+
+  const max = Math.max(...series.map((s) => s.score), 0.001);
+  const pointX = (index: number) => (index / Math.max(series.length - 1, 1)) * 1000;
+  const timestampX = (timestampSec: number) => durationSec > 0 ? (timestampSec / durationSec) * 1000 : 0;
   return (
-    <div className={cn("glass-panel rounded-xl p-4", className)}>
-      <div className="mb-3 flex items-center justify-between">
+    <div className={cn("glass-panel rounded-xl p-4", className)} role="img" aria-label={`Visual change timeline for ${durationSec.toFixed(1)} seconds`}>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
           visual change · {durationSec.toFixed(1)}s
         </div>
@@ -41,7 +52,7 @@ export function FrameTimeline({ series, frames, durationSec, className }: Props)
               d={
                 "M0,100 " +
                 series
-                  .map((s, i) => `L${(i / (series.length - 1)) * 1000},${100 - (s.score / max) * 92}`)
+                  .map((s, i) => `L${pointX(i)},${100 - (s.score / max) * 92}`)
                   .join(" ") +
                 " L1000,100 Z"
               }
@@ -49,7 +60,7 @@ export function FrameTimeline({ series, frames, durationSec, className }: Props)
             />
             <path
               d={series
-                .map((s, i) => `${i === 0 ? "M" : "L"}${(i / (series.length - 1)) * 1000},${100 - (s.score / max) * 92}`)
+                .map((s, i) => `${i === 0 ? "M" : "L"}${pointX(i)},${100 - (s.score / max) * 92}`)
                 .join(" ")}
               fill="none"
               stroke="currentColor"
@@ -58,7 +69,7 @@ export function FrameTimeline({ series, frames, durationSec, className }: Props)
             />
           </g>
           {frames.map((f) => {
-            const x = (f.timestampSec / durationSec) * 1000;
+            const x = timestampX(f.timestampSec);
             const color =
               f.reason === "anchor"
                 ? "var(--ember)"
