@@ -41,3 +41,7 @@ web/*.tsbuildinfo
 examples/demo-videos/
 web/vite.config.js
 web/vite.config.d.ts
+
+# Local Codex skill bundles
+.agents/
+.github/skills/
