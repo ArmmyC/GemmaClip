@@ -57,9 +57,23 @@ class FakeGemma:
         })
 
 
-def _extract(task_id, video_path, metadata, **kwargs):
-    del video_path, metadata
-    root = Path(kwargs["destination_root"]) / task_id
+def _extract(
+    task_id,
+    video_path,
+    metadata,
+    *,
+    strategy,
+    total_frames,
+    anchor_count,
+    high_change_count,
+    min_spacing_seconds,
+    change_sensitivity,
+    destination_root,
+    command_timeout_seconds,
+):
+    del video_path, metadata, strategy, total_frames, anchor_count, high_change_count
+    del min_spacing_seconds, change_sensitivity, command_timeout_seconds
+    root = Path(destination_root) / task_id
     root.mkdir(parents=True, exist_ok=True)
     result = []
     for index in range(1, 7):

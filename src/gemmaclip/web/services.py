@@ -167,7 +167,6 @@ class WebServices:
                 change_sensitivity=values["changeSensitivity"],
                 destination_root=processing_root,
                 command_timeout_seconds=15.0,
-                env=self._routed_env(),
             )
             if len(extracted) < 6 or len(extracted) > 16:
                 raise WebPipelineError("Frame extraction did not produce the required six-frame evidence set.")
