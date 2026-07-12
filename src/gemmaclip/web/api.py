@@ -92,16 +92,22 @@ def create_api_router() -> APIRouter:
     @router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_run(run_id: str, request: Request) -> Response:
         storage, _, jobs = _dependencies(request)
-        if jobs.is_active(run_id):
-            raise HTTPException(status_code=409, detail="This run is currently processing and cannot be deleted.")
-        storage.delete_run(run_id)
+        try:
+            with jobs.mutation(run_id):
+                storage.delete_run(run_id)
+        except JobAlreadyRunning as exc:
+            raise HTTPException(status_code=409, detail="This run is currently processing and cannot be deleted.") from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @router.post("/runs/{run_id}/metadata", response_model=RunResponse)
     def metadata(run_id: str, payload: PresetRequest, request: Request) -> dict[str, Any]:
-        _, services, _ = _dependencies(request)
-        services.apply_preset(run_id, payload.preset)
-        return services.probe_run_video(run_id)
+        _, services, jobs = _dependencies(request)
+        try:
+            with jobs.mutation(run_id):
+                services.apply_preset(run_id, payload.preset)
+                return services.probe_run_video(run_id)
+        except JobAlreadyRunning as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.post("/runs/{run_id}/quick-caption", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
     def quick_caption(run_id: str, request: Request) -> dict[str, Any]:
@@ -121,8 +127,12 @@ def create_api_router() -> APIRouter:
 
     @router.patch("/runs/{run_id}/frames/selection", response_model=RunResponse)
     def frame_selection(run_id: str, payload: FrameSelectionRequest, request: Request) -> dict[str, Any]:
-        _, services, _ = _dependencies(request)
-        return services.update_frame_selection(run_id, payload.included_frame_ids)
+        _, services, jobs = _dependencies(request)
+        try:
+            with jobs.mutation(run_id):
+                return services.update_frame_selection(run_id, payload.included_frame_ids)
+        except JobAlreadyRunning as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.get("/runs/{run_id}/frames", response_model=RunResponse)
     def get_frames(run_id: str, request: Request) -> dict[str, Any]:
@@ -154,8 +164,12 @@ def create_api_router() -> APIRouter:
 
     @router.post("/runs/{run_id}/experiments", response_model=RunResponse)
     def experiment(run_id: str, payload: ExperimentRequest, request: Request) -> dict[str, Any]:
-        _, services, _ = _dependencies(request)
-        return services.create_run_experiment(run_id, payload.label, payload.caption_style)
+        _, services, jobs = _dependencies(request)
+        try:
+            with jobs.mutation(run_id):
+                return services.create_run_experiment(run_id, payload.label, payload.caption_style)
+        except JobAlreadyRunning as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.get("/runs/{run_id}/experiments", response_model=RunResponse)
     def experiments(run_id: str, request: Request) -> dict[str, Any]:

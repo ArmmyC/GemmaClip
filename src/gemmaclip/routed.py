@@ -140,7 +140,7 @@ def generate_routed_captions_from_evidence(
     outcome_callback: Callable[[GenerationOutcome], None] | None = None,
 ) -> dict[str, str]:
     """Synthesize captions from persisted evidence without rerunning upstream stages."""
-    from gemmaclip.captioner import build_evidence_based_captions, cleanup_caption
+    from gemmaclip.captioner import build_bounded_evidence_captions, cleanup_caption
 
     active_logger = logger or LOGGER
     audio = unavailable_audio(16_000, "using persisted evidence")
@@ -179,10 +179,10 @@ def generate_routed_captions_from_evidence(
             max_words=max_words,
         )
     except RoutedRuntimeBudgetError:
-        captions = build_evidence_based_captions(task.styles, caption_evidence)
+        captions = build_bounded_evidence_captions(task.styles, caption_evidence, min_words=min_words, max_words=max_words)
         return _return_with_outcome(captions, outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
     except Exception:
-        captions = build_evidence_based_captions(task.styles, caption_evidence)
+        captions = build_bounded_evidence_captions(task.styles, caption_evidence, min_words=min_words, max_words=max_words)
         return _return_with_outcome(captions, outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
 
     model_generated_styles = set(captions)
@@ -219,7 +219,7 @@ def generate_routed_captions_from_evidence(
             pass
     still_missing = [style for style in task.styles if style not in captions]
     if still_missing:
-        captions.update(build_evidence_based_captions(still_missing, caption_evidence))
+        captions.update(build_bounded_evidence_captions(still_missing, caption_evidence, min_words=min_words, max_words=max_words))
     normalized = {style: cleanup_caption(captions[style], style, dict(caption_evidence), max_words=max_words) for style in task.styles}
     outcome = GENERATION_OUTCOME_MODEL if model_generated_styles else GENERATION_OUTCOME_EVIDENCE_FALLBACK
     return _return_with_outcome(normalized, outcome_callback, outcome)
@@ -240,7 +240,7 @@ def generate_routed_captions(
     outcome_callback: Callable[[GenerationOutcome], None] | None = None,
     evidence_execution_callback: Callable[[EvidenceExecution], None] | None = None,
 ) -> dict[str, str]:
-    from gemmaclip.captioner import build_evidence_based_captions, build_fallback_captions, cleanup_caption
+    from gemmaclip.captioner import build_bounded_evidence_captions, build_fallback_captions, cleanup_caption
 
     active_logger = logger or LOGGER
     if not config.has_credentials:
@@ -322,7 +322,7 @@ def generate_routed_captions(
             active_logger, task.task_id, "caption", "caption",
             remaining_before_final, FINAL_SYNTHESIS_MIN_SECONDS, audio, decision.use_audio,
         )
-        return _return_with_outcome(build_evidence_based_captions(task.styles, evidence), outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
+        return _return_with_outcome(build_bounded_evidence_captions(task.styles, evidence, min_words=18, max_words=35), outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
 
     try:
         _notify_stage(stage_callback, "writing_captions")
@@ -342,10 +342,10 @@ def generate_routed_captions(
             audio_selected=execution.audio_used,
         )
     except RoutedRuntimeBudgetError:
-        return _return_with_outcome(build_evidence_based_captions(task.styles, evidence), outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
+        return _return_with_outcome(build_bounded_evidence_captions(task.styles, evidence, min_words=18, max_words=35), outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
     except Exception as exc:
         active_logger.warning("task_id=%s operation=caption route=caption provider=routed_gemma model=role_configured attempt=0 status=failed elapsed_seconds=0 remaining_seconds=%.3f minimum_remaining_seconds=%.3f fallback_used=true audio_available=%s audio_selected=%s audio_window_seconds=%.3f error=%s", task.task_id, remaining_time_fn(), FINAL_SYNTHESIS_MIN_SECONDS, str(audio.available).lower(), str(decision.use_audio).lower(), audio.duration_seconds, type(exc).__name__)
-        return _return_with_outcome(build_evidence_based_captions(task.styles, evidence), outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
+        return _return_with_outcome(build_bounded_evidence_captions(task.styles, evidence, min_words=18, max_words=35), outcome_callback, GENERATION_OUTCOME_EVIDENCE_FALLBACK)
 
     model_generated_styles = set(captions)
     missing_styles = [style for style in task.styles if style not in captions]
@@ -388,7 +388,7 @@ def generate_routed_captions(
             )
         still_missing = [style for style in task.styles if style not in captions]
         if still_missing:
-            captions.update(build_evidence_based_captions(still_missing, evidence))
+            captions.update(build_bounded_evidence_captions(still_missing, evidence, min_words=18, max_words=35))
 
     captions = {style: cleanup_caption(captions[style], style, evidence) for style in task.styles}
     if debug_dir is not None:
@@ -420,7 +420,7 @@ def build_final_caption_messages(
 ) -> list[dict[str, Any]]:
     content = [_image_part(frame.path, google=google) for frame in frames]
     content.append({"type": "text", "text": build_final_caption_prompt(task, frames, evidence, min_words=min_words, max_words=max_words, audio_evidence_mode=audio_evidence_mode)})
-    return [{"role": "system", "content": final_caption_system_prompt()}, {"role": "user", "content": content}]
+    return [{"role": "system", "content": final_caption_system_prompt(frame_count=len(frames))}, {"role": "user", "content": content}]
 
 
 def build_focused_repair_messages(
@@ -444,7 +444,7 @@ def build_focused_repair_messages(
         f"Each caption must contain {min_words}-{max_words} words. Audio policy: {audio_evidence_mode}. "
         f"Return only this exact JSON shape: {json.dumps(schema)}"
     )})
-    return [{"role": "system", "content": final_caption_system_prompt()}, {"role": "user", "content": content}]
+    return [{"role": "system", "content": final_caption_system_prompt(frame_count=len(frames))}, {"role": "user", "content": content}]
 
 
 def build_evidence_prompt(task_id: str, frames: Sequence[ExtractedFrame], audio: AudioEvidenceCandidate, decision: RouteDecision) -> str:
@@ -455,17 +455,17 @@ def build_evidence_prompt(task_id: str, frames: Sequence[ExtractedFrame], audio:
         "No audio was provided. Set audio.available=false and audio.status=unavailable. Never infer sound, speech, dialogue, music, or noise from images."
     )
     return (
-        f"Task ID: {task_id}\nSix chronological frame timestamps: {timestamps}\n{audio_instruction}\n"
+        f"Task ID: {task_id}\n{len(frames)} chronological frame timestamps: {timestamps}\n{audio_instruction}\n"
         "Return only one JSON object matching the supplied schema. Report only visible or audible evidence. Do not invent speaker identity, relationships, motives, occupation, destination, or events outside the sampled frames and selected audio window. Put uncertain transcript content in an uncertain state. Only place audio facts safe for final captions in audio.allowed_caption_facts. Set audio.visual_consistency to consistent, contradictory, or unknown. Do not provide chain-of-thought or detailed reasoning.\n"
         f"Schema: {json.dumps(empty_evidence(), separators=(',', ':'))}"
     )
 
 
-def final_caption_system_prompt() -> str:
+def final_caption_system_prompt(*, frame_count: int = 6) -> str:
     from gemmaclip.prompts import build_fireworks_judge_generation_system_prompt
     humor_prompt = build_fireworks_judge_generation_system_prompt().replace(
         "Use only the six separate chronological frames provided.",
-        "Use only the six separate chronological frames and structured evidence provided.",
+        f"Use only the {frame_count} separate chronological frames and structured evidence provided.",
     )
     return humor_prompt + (
         "\n\nAudio evidence rule: use an audio fact only when audio.status is usable, it is listed in "
@@ -491,7 +491,7 @@ def build_final_caption_prompt(
     }.get(audio_evidence_mode, "Use only grounded visual evidence.")
     return (
         f"Task ID: {task.task_id}\nRequested styles: {', '.join(task.styles)}\n"
-        f"Six chronological timestamps: {', '.join(f'{frame.timestamp_seconds:.3f}' for frame in frames)}\n"
+        f"{len(frames)} chronological timestamps: {', '.join(f'{frame.timestamp_seconds:.3f}' for frame in frames)}\n"
         f"Each caption must contain {min_words}-{max_words} words. Strict visual grounding is required.\n"
         f"{audio_rule}\nStructured evidence JSON: {json.dumps(evidence, separators=(',', ':'))}\n"
         "Do not use a transcript verbatim unless short, clearly audible, relevant, and explicitly allowed.\n"

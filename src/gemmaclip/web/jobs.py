@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import Executor, ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import Any, Mapping
 
 from gemmaclip.web.services import WebConfigurationError, WebPipelineError, WebServices
@@ -62,6 +63,21 @@ class JobManager:
     def active_run_ids(self) -> set[str]:
         with self._lock:
             return set(self._active)
+
+    @contextmanager
+    def mutation(self, run_id: str):
+        """Serialize synchronous run mutations with asynchronous jobs."""
+        with self._lock:
+            if self._closed:
+                raise JobManagerClosed("Processing is temporarily unavailable during shutdown.")
+            if run_id in self._active:
+                raise JobAlreadyRunning("This run is currently processing and cannot be changed.")
+            self._active.add(run_id)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._active.discard(run_id)
 
     def close(self) -> None:
         with self._lock:

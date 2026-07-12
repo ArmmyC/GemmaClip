@@ -6,8 +6,10 @@ import time
 import wave
 
 from fastapi.testclient import TestClient
+import pytest
 
 from gemmaclip.audio import AudioEvidenceCandidate, unavailable_audio
+from gemmaclip.captioner import build_bounded_evidence_captions
 from gemmaclip.frames import ExtractedFrame
 from gemmaclip.gemma_client import load_routed_gemma_config
 from gemmaclip.io import Task
@@ -16,6 +18,7 @@ from gemmaclip.video import VideoMetadata
 from gemmaclip.web.app import create_app
 from gemmaclip.web.jobs import JobManager
 from gemmaclip.web.services import PipelineDependencies, WebServices
+from gemmaclip.web.services import WebPipelineError
 from gemmaclip.web.storage import RunStorage
 
 
@@ -163,6 +166,41 @@ def test_quick_intermediate_stage_keeps_processing_status(tmp_path):
     jobs.close()
 
 
+def test_quick_uses_one_decreasing_deadline_for_later_remote_attempts(tmp_path, monkeypatch):
+    client, _ = _manual_client(tmp_path)
+    clock = {"now": 0.0}
+    monkeypatch.setattr("gemmaclip.web.services.time.monotonic", lambda: clock["now"])
+    with client:
+        run_id = _create_manual(client)
+        services = client.app.state.services
+        original_extract = services.extract_run_frames
+        original_audio = services.analyze_run_audio
+
+        def slow_frames(run_id, config):
+            result = original_extract(run_id, config)
+            clock["now"] += 300.0
+            return result
+
+        def slow_audio(run_id, config):
+            result = original_audio(run_id, config)
+            clock["now"] += 200.0
+            return result
+
+        services.extract_run_frames = slow_frames
+        services.analyze_run_audio = slow_audio
+        provider_calls = []
+
+        class UnexpectedProvider:
+            def chat_completion_text(self, *args, **kwargs):
+                provider_calls.append((args, kwargs))
+                raise AssertionError("the evidence provider should be skipped at 70 seconds remaining")
+
+        services.dependencies.client_factory = lambda config: UnexpectedProvider()
+        with pytest.raises(WebPipelineError, match="Evidence generation failed safely"):
+            services.run_quick_caption(run_id)
+        assert provider_calls == []
+
+
 def test_frame_selection_is_persisted_and_invalidates_downstream(tmp_path):
     client, _ = _manual_client(tmp_path)
     with client:
@@ -201,6 +239,33 @@ def test_conflicting_stage_job_returns_409_and_blocks_delete(tmp_path):
         assert client.post(f"/api/runs/{run_id}/frames", json=payload).status_code == 409
         assert client.delete(f"/api/runs/{run_id}").status_code == 409
         assert storage.run_dir(run_id).exists()
+
+
+def test_synchronous_mutations_are_rejected_while_run_job_is_active(tmp_path):
+    client, storage = _manual_client(tmp_path, executor=BlockingExecutor())
+    with client:
+        run_id = _create_manual(client)
+        frame_config = {"method": "hybrid", "totalFrames": 6, "anchorCount": 4, "highChangeCount": 2, "minSpacingSec": 1.0, "changeSensitivity": 0.5}
+        assert client.post(f"/api/runs/{run_id}/frames", json=frame_config).status_code == 202
+        assert client.post(f"/api/runs/{run_id}/metadata", json={"preset": "balanced"}).status_code == 409
+
+    client, storage = _manual_client(tmp_path / "evidence", executor=BlockingExecutor())
+    with client:
+        run_id = _create_manual(client)
+        services = client.app.state.services
+        services.extract_run_frames(run_id, frame_config)
+        assert client.post(f"/api/runs/{run_id}/evidence", json={"route": "auto", "temperature": 0.0, "maxTokens": 2048}).status_code == 202
+        frame_ids = [f"frame_{index:03d}.jpg" for index in range(1, 7)]
+        assert client.patch(f"/api/runs/{run_id}/frames/selection", json={"includedFrameIds": frame_ids}).status_code == 409
+
+    client, storage = _manual_client(tmp_path / "captions", executor=BlockingExecutor())
+    with client:
+        run_id = _create_manual(client)
+        services = client.app.state.services
+        services.extract_run_frames(run_id, frame_config)
+        storage.update_run(run_id, lambda payload: payload["stages"].update(evidence="complete"))
+        assert client.post(f"/api/runs/{run_id}/captions", json={"temperature": 0.4, "minWords": 18, "maxWords": 35, "strictGrounding": True, "audioEvidenceMode": "use-if-present", "focusedRepair": True, "styles": ["formal"]}).status_code == 202
+        assert client.post(f"/api/runs/{run_id}/experiments", json={"label": "blocked", "captionStyle": "formal"}).status_code == 409
 
 
 def test_audio_candidate_is_cleaned_after_stage_completion(tmp_path):
@@ -281,3 +346,37 @@ def test_evidence_max_tokens_and_caption_policy_reach_provider_attempts(tmp_path
     assert seen_max_tokens == [512]
     assert "8-16 word caption" in prompts[0]
     assert "Ignore all audio evidence" in prompts[0]
+
+
+def test_deterministic_caption_fallback_respects_word_bounds():
+    captions = build_bounded_evidence_captions(
+        ("formal", "sarcastic"),
+        {"main_subjects": ["a person"], "actions": ["walking"], "setting": "a room"},
+        min_words=8,
+        max_words=10,
+    )
+    assert all(8 <= len(caption.split()) <= 10 for caption in captions.values())
+
+
+def test_routed_caption_fallback_respects_selected_word_bounds(tmp_path):
+    frames = []
+    for index in range(6):
+        path = tmp_path / f"frame_{index}.jpg"
+        path.write_bytes(b"jpeg")
+        frames.append(ExtractedFrame(path, float(index), "uniform", 0.1))
+
+    class FailingGemma:
+        def chat_completion_text(self, *args, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+    captions = generate_routed_captions_from_evidence(
+        Task("fallback", "video", ("formal",)),
+        frames,
+        {"scene": "a room", "main_subjects": ["person"], "actions": ["walking"], "audio": {"status": "unavailable", "allowed_caption_facts": []}},
+        config=load_routed_gemma_config({"GOOGLE_API_KEY": "test-key"}),
+        client_factory=lambda _: FailingGemma(),
+        remaining_time_fn=lambda: 500.0,
+        min_words=8,
+        max_words=10,
+    )
+    assert 8 <= len(captions["formal"].split()) <= 10

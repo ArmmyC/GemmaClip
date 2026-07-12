@@ -19,9 +19,9 @@ export const Route = createFileRoute("/lab/$runId/video")({
 });
 
 const PRESETS: { id: ProcessingPreset; label: string; note: string }[] = [
-  { id: "fast", label: "Fast", note: "Fewer frames, visual-only route, quickest turnaround." },
+  { id: "fast", label: "Fast", note: "Six uniform frames, audio off, quickest turnaround." },
   { id: "balanced", label: "Balanced", note: "Hybrid frame selection, automatic audio, auto route." },
-  { id: "maximum", label: "Maximum Detail", note: "Dense frames, mandatory audio, unified route." },
+  { id: "maximum", label: "Maximum Detail", note: "Dense frames, prefer audio-visual when usable." },
   { id: "custom", label: "Custom", note: "Configure every stage yourself in the lab." },
 ];
 

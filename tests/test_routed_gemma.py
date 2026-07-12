@@ -128,6 +128,16 @@ def test_final_prompt_has_exact_keys_frames_evidence_and_audio_gate(tmp_path):
     assert "scores" not in prompt
 
 
+def test_prompts_use_dynamic_frame_count(tmp_path):
+    source = _frames(tmp_path)[0]
+    frames = [ExtractedFrame(source.path, float(index)) for index in range(12)]
+    evidence_prompt = build_evidence_messages("v1", frames, _audio(path=None, available=False), RouteDecision("visual", False, "off"), google=True)[1]["content"][12]["text"]
+    caption_prompt = build_final_caption_messages(Task("v1", "video", ("formal",)), frames, empty_evidence(), google=True)
+    assert "12 chronological frame timestamps" in evidence_prompt
+    assert "12 chronological timestamps" in caption_prompt[1]["content"][12]["text"]
+    assert "12 separate chronological frames" in caption_prompt[0]["content"]
+
+
 def test_malformed_evidence_and_audio_status_are_normalized_safely():
     payload = {"scene": 42, "main_subjects": "bad", "audio": {"status": "invented", "allowed_caption_facts": ["hello"]}}
     normalized = normalize_routed_evidence(payload, _audio(), RouteDecision("audio_visual", True, "selected"))

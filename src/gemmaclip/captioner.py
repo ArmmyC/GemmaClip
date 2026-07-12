@@ -988,6 +988,27 @@ def build_evidence_based_captions(
     return {style: templates[style] for style in styles}
 
 
+def build_bounded_evidence_captions(
+    styles: Sequence[str],
+    evidence: Mapping[str, Any],
+    *,
+    min_words: int,
+    max_words: int,
+) -> dict[str, str]:
+    """Keep deterministic evidence fallback captions inside the requested bounds."""
+    if min_words < 1 or max_words < min_words:
+        raise ValueError("Caption word bounds are invalid.")
+    base = build_evidence_based_captions(styles, evidence)
+    padding = "The sampled frames provide only visible context."
+    bounded: dict[str, str] = {}
+    for style, caption in base.items():
+        words = caption.split()
+        while len(words) < min_words:
+            words.extend(padding.split())
+        bounded[style] = " ".join(words[:max_words]).strip()
+    return bounded
+
+
 def cleanup_caption(
     caption: str,
     style: str,

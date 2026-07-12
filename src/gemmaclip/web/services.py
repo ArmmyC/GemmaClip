@@ -263,7 +263,15 @@ class WebServices:
 
         return self.storage.update_run(run_id, complete)
 
-    def generate_run_evidence(self, run_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
+    def generate_run_evidence(
+        self,
+        run_id: str,
+        config: Mapping[str, Any],
+        *,
+        remaining_time_fn: Callable[[], float] | None = None,
+    ) -> dict[str, Any]:
+        stage_deadline = time.monotonic() + WEB_JOB_RUNTIME_SECONDS
+        remaining = remaining_time_fn or (lambda: max(0.0, stage_deadline - time.monotonic()))
         values = _validate_evidence_config(config)
         run = self.storage.read_run(run_id)
         if run["stages"].get("frames") != "complete":
@@ -300,7 +308,7 @@ class WebServices:
             elif values["route"] == "gemma-4-12b-unified":
                 decision = RouteDecision("audio_visual", bool(candidate.path), "audio-visual route selected by the user")
             else:
-                decision = decide_evidence_route(audio_config, candidate, WEB_JOB_RUNTIME_SECONDS)
+                decision = decide_evidence_route(audio_config, candidate, remaining())
             routed = load_routed_gemma_config(self._routed_env())
             raw_evidence, execution = generate_routed_evidence(
                 run_id,
@@ -309,7 +317,7 @@ class WebServices:
                 decision,
                 config=routed,
                 client_factory=self.dependencies.client_factory,
-                remaining_time_fn=lambda: WEB_JOB_RUNTIME_SECONDS,
+                remaining_time_fn=remaining,
                 temperature=values["temperature"],
                 max_tokens=values["maxTokens"],
             )
@@ -335,7 +343,15 @@ class WebServices:
 
         return self.storage.update_run(run_id, complete)
 
-    def generate_run_captions(self, run_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
+    def generate_run_captions(
+        self,
+        run_id: str,
+        config: Mapping[str, Any],
+        *,
+        remaining_time_fn: Callable[[], float] | None = None,
+    ) -> dict[str, Any]:
+        stage_deadline = time.monotonic() + WEB_JOB_RUNTIME_SECONDS
+        remaining = remaining_time_fn or (lambda: max(0.0, stage_deadline - time.monotonic()))
         values = _validate_caption_config(config)
         started = time.monotonic()
         run = self.storage.read_run(run_id)
@@ -365,7 +381,7 @@ class WebServices:
                 evidence,
                 config=load_routed_gemma_config(self._routed_env()),
                 client_factory=self.dependencies.client_factory,
-                remaining_time_fn=lambda: WEB_JOB_RUNTIME_SECONDS,
+                remaining_time_fn=remaining,
                 temperature=values["temperature"],
                 repair_temperature=0.25,
                 min_words=values["minWords"],
@@ -440,6 +456,11 @@ class WebServices:
 
     def run_quick_caption(self, run_id: str, progress: Callable[[str, str], None] | None = None) -> dict[str, Any]:
         self.ensure_credentials()
+        deadline = time.monotonic() + WEB_JOB_RUNTIME_SECONDS
+
+        def remaining() -> float:
+            return max(0.0, deadline - time.monotonic())
+
         notify = progress or (lambda stage, message: None)
         self.storage.update_run(run_id, lambda payload: payload.update(mode="quick"))
         notify("video", "Inspecting video")
@@ -467,7 +488,7 @@ class WebServices:
             captions = self.dependencies.caption_generate_fn(
                 Task(run_id, "web-upload", DEFAULT_STYLES), frames,
                 env=self._routed_env(), video_path=self.storage.input_path(run_id), debug_dir=debug_dir,
-                client_factory=self.dependencies.client_factory, remaining_time_fn=lambda: WEB_JOB_RUNTIME_SECONDS,
+                client_factory=self.dependencies.client_factory, remaining_time_fn=remaining,
                 stage_callback=lambda stage: notify(stage, {"building_evidence": "Building grounded evidence", "writing_captions": "Writing captions"}.get(stage, stage)),
                 outcome_callback=capture, evidence_execution_callback=capture_execution,
             )
@@ -498,9 +519,9 @@ class WebServices:
             return self.storage.update_run(run_id, complete)
 
         notify("evidence", "Building grounded evidence")
-        self.generate_run_evidence(run_id, {"route": "auto", "temperature": 0.0, "maxTokens": 2048, "provider": "automatic", "showPromptStructure": False, "showRawJson": True})
+        self.generate_run_evidence(run_id, {"route": "auto", "temperature": 0.0, "maxTokens": 2048, "provider": "automatic", "showPromptStructure": False, "showRawJson": True}, remaining_time_fn=remaining)
         notify("captions", "Writing captions")
-        result = self.generate_run_captions(run_id, {"model": "gemma-4-31b", "temperature": 0.4, "minWords": 18, "maxWords": 35, "strictGrounding": True, "audioEvidenceMode": "use-if-present", "focusedRepair": True, "styles": ["formal", "sarcastic", "humorous-tech", "humorous-non-tech"]})
+        result = self.generate_run_captions(run_id, {"model": "gemma-4-31b", "temperature": 0.4, "minWords": 18, "maxWords": 35, "strictGrounding": True, "audioEvidenceMode": "use-if-present", "focusedRepair": True, "styles": ["formal", "sarcastic", "humorous-tech", "humorous-non-tech"]}, remaining_time_fn=remaining)
         self.storage.update_run(run_id, lambda payload: payload.update(status="ready", activeStage="compare", progressMessage="Complete"))
         return self.storage.public_run(self.storage.read_run(run_id))
 
