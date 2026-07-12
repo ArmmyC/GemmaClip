@@ -119,6 +119,7 @@ def _mark_stage_processing(run: dict[str, Any], stage: str) -> None:
 
 
 def _mark_progress(run: dict[str, Any], stage: str, message: str) -> None:
+    run["status"] = "processing"
     previous = run.get("activeStage")
     if previous in run["stages"] and previous != stage and run["stages"][previous] == "active":
         run["stages"][previous] = "complete"

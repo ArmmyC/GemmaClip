@@ -32,6 +32,7 @@ from gemmaclip.routed import (
     GENERATION_OUTCOME_EVIDENCE_FALLBACK,
     GENERATION_OUTCOME_MODEL,
 )
+from gemmaclip.routed import caption_evidence_for_mode
 from gemmaclip.video import VideoMetadata, probe_video
 from gemmaclip.web.adapters import (
     adapt_captions,
@@ -121,7 +122,7 @@ class WebServices:
         def update(payload: dict[str, Any]) -> None:
             payload["preset"] = preset
             if preset == "fast":
-                payload["frames"]["config"].update({"method": "uniform", "totalFrames": 4, "anchorCount": 0, "highChangeCount": 0})
+                payload["frames"]["config"].update({"method": "uniform", "totalFrames": 6, "anchorCount": 0, "highChangeCount": 0})
                 payload["audio"]["config"]["mode"] = "disabled"
             elif preset == "balanced":
                 payload["frames"]["config"].update({"method": "hybrid", "totalFrames": 6, "anchorCount": 4, "highChangeCount": 2, "minSpacingSec": 1.0, "changeSensitivity": 0.5})
@@ -164,8 +165,8 @@ class WebServices:
                 command_timeout_seconds=15.0,
                 env=self._routed_env(),
             )
-            if len(extracted) < 2 or len(extracted) > 16:
-                raise WebPipelineError("Frame extraction did not produce a safe number of frames.")
+            if len(extracted) < 6 or len(extracted) > 16:
+                raise WebPipelineError("Frame extraction did not produce the required six-frame evidence set.")
             if any(not frame.path.is_file() for frame in extracted):
                 raise WebPipelineError("Frame extraction produced an incomplete artifact.")
             ordered = sorted(extracted, key=lambda frame: frame.timestamp_seconds)
@@ -200,8 +201,8 @@ class WebServices:
         selected = list(dict.fromkeys(str(item) for item in included_ids))
         if any(item not in known for item in selected):
             raise WebPipelineError("The frame selection contains an unknown frame.")
-        if len(selected) < 2:
-            raise WebPipelineError("Select at least two frames for evidence generation.")
+        if len(selected) < 6:
+            raise WebPipelineError("Select at least six frames for evidence generation.")
 
         def update(payload: dict[str, Any]) -> None:
             for frame in payload["frames"]["frames"]:
@@ -310,6 +311,7 @@ class WebServices:
                 client_factory=self.dependencies.client_factory,
                 remaining_time_fn=lambda: WEB_JOB_RUNTIME_SECONDS,
                 temperature=values["temperature"],
+                max_tokens=values["maxTokens"],
             )
         except WebConfigurationError:
             raise
@@ -366,13 +368,18 @@ class WebServices:
                 remaining_time_fn=lambda: WEB_JOB_RUNTIME_SECONDS,
                 temperature=values["temperature"],
                 repair_temperature=0.25,
+                min_words=values["minWords"],
+                max_words=values["maxWords"],
+                audio_evidence_mode=values["audioEvidenceMode"],
+                focused_repair=values["focusedRepair"],
+                strict_grounding=values["strictGrounding"],
                 outcome_callback=capture,
             )
         except Exception as exc:
             raise WebPipelineError("Caption generation failed safely. Please retry after rebuilding evidence.") from exc
         if outcome == GENERATION_OUTCOME_DETERMINISTIC_FALLBACK:
             raise WebPipelineError("Gemma could not produce grounded captions for this evidence.")
-        adapted = adapt_captions(captions, evidence)
+        adapted = adapt_captions(captions, caption_evidence_for_mode(evidence, values["audioEvidenceMode"]))
         self.storage.write_artifact_json(run_id, "results/captions.json", captions)
 
         def complete(payload: dict[str, Any]) -> None:
@@ -541,7 +548,7 @@ def _invalidate(payload: dict[str, Any], source_stage: str) -> None:
 
 
 def _mark_stage_ready(payload: dict[str, Any], stage: str, message: str, elapsed: float) -> None:
-    payload["status"] = "ready"
+    payload["status"] = "processing" if payload.get("mode") == "quick" else "ready"
     payload["activeStage"] = stage
     payload["progressMessage"] = message
     payload["error"] = None
@@ -605,7 +612,7 @@ def _validate_frame_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "minSpacingSec": float(config.get("minSpacingSec", 1.0)),
         "changeSensitivity": float(config.get("changeSensitivity", 0.5)),
     }
-    if method not in {"uniform", "aks-lite", "hybrid"} or not 2 <= values["totalFrames"] <= 16:
+    if method not in {"uniform", "aks-lite", "hybrid"} or not 6 <= values["totalFrames"] <= 16:
         raise WebPipelineError("Frame configuration is outside the supported range.")
     if min(values["anchorCount"], values["highChangeCount"]) < 0 or values["anchorCount"] + values["highChangeCount"] > values["totalFrames"]:
         raise WebPipelineError("Anchor and high-change counts must fit within total frames.")
@@ -642,7 +649,7 @@ def _validate_caption_config(config: Mapping[str, Any]) -> dict[str, Any]:
     if not styles or len(set(styles)) != len(styles) or any(style not in {"formal", "sarcastic", "humorous-tech", "humorous-non-tech"} for style in styles):
         raise WebPipelineError("Choose at least one supported caption style.")
     values = {"model": "gemma-4-31b", "temperature": float(config.get("temperature", 0.4)), "minWords": int(config.get("minWords", 18)), "maxWords": int(config.get("maxWords", 35)), "strictGrounding": bool(config.get("strictGrounding", True)), "audioEvidenceMode": str(config.get("audioEvidenceMode", "use-if-present")), "focusedRepair": bool(config.get("focusedRepair", True)), "styles": styles}
-    if not 0 <= values["temperature"] <= 2 or not 1 <= values["minWords"] <= values["maxWords"] <= 120 or values["audioEvidenceMode"] not in {"ignore", "use-if-present", "require"}:
+    if not 0 <= values["temperature"] <= 2 or not 1 <= values["minWords"] <= values["maxWords"] <= 120 or values["audioEvidenceMode"] not in {"ignore", "use-if-present", "require"} or not values["strictGrounding"]:
         raise WebPipelineError("Caption configuration is outside the supported range.")
     return values
 

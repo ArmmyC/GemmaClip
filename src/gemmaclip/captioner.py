@@ -676,26 +676,30 @@ def request_model_text(
     *,
     temperature: float,
     use_response_format: bool | None = None,
+    max_tokens: int | None = None,
 ) -> str:
+    kwargs: dict[str, Any] = {"use_response_format": use_response_format}
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
     if hasattr(client, "chat_completion_text"):
         try:
-            return client.chat_completion_text(
-                messages,
-                temperature,
-                use_response_format=use_response_format,
-            )
+            return client.chat_completion_text(messages, temperature, **kwargs)
         except TypeError:
-            return client.chat_completion_text(messages, temperature)
+            kwargs.pop("max_tokens", None)
+            try:
+                return client.chat_completion_text(messages, temperature, **kwargs)
+            except TypeError:
+                return client.chat_completion_text(messages, temperature)
 
     if hasattr(client, "chat_completion_json"):
         try:
-            payload = client.chat_completion_json(
-                messages,
-                temperature,
-                use_response_format=use_response_format,
-            )
+            payload = client.chat_completion_json(messages, temperature, **kwargs)
         except TypeError:
-            payload = client.chat_completion_json(messages, temperature)
+            kwargs.pop("max_tokens", None)
+            try:
+                payload = client.chat_completion_json(messages, temperature, **kwargs)
+            except TypeError:
+                payload = client.chat_completion_json(messages, temperature)
         return json.dumps(payload)
 
     raise TypeError("Client does not support text or JSON chat completion methods.")
@@ -984,13 +988,19 @@ def build_evidence_based_captions(
     return {style: templates[style] for style in styles}
 
 
-def cleanup_caption(caption: str, style: str, evidence: dict[str, Any]) -> str:
+def cleanup_caption(
+    caption: str,
+    style: str,
+    evidence: dict[str, Any],
+    *,
+    max_words: int = MAX_CAPTION_WORDS,
+) -> str:
     cleaned = caption.strip()
     cleaned = _soften_speculation_phrases(cleaned)
     if style == "humorous_tech" and _contains_unsupported_tech_claim(cleaned.lower(), evidence):
         cleaned = _soften_unsupported_tech_claims(cleaned)
     cleaned = _normalize_spacing(cleaned)
-    cleaned = _trim_caption_to_max_words(cleaned, max_words=MAX_CAPTION_WORDS)
+    cleaned = _trim_caption_to_max_words(cleaned, max_words=max_words)
     return cleaned or caption.strip()
 
 

@@ -1,12 +1,17 @@
-from concurrent.futures import Executor, Future
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 import json
 from pathlib import Path
+import threading
+import time
 import wave
 
 from fastapi.testclient import TestClient
 
 from gemmaclip.audio import AudioEvidenceCandidate, unavailable_audio
 from gemmaclip.frames import ExtractedFrame
+from gemmaclip.gemma_client import load_routed_gemma_config
+from gemmaclip.io import Task
+from gemmaclip.routed import RouteDecision, generate_routed_captions_from_evidence, generate_routed_evidence
 from gemmaclip.video import VideoMetadata
 from gemmaclip.web.app import create_app
 from gemmaclip.web.jobs import JobManager
@@ -120,18 +125,71 @@ def test_manual_lab_pipeline_uses_stage_jobs_and_real_snapshots(tmp_path):
         assert comparison.json()["differences"]["captionTemperature"] == {"left": 0.4, "right": 0.8}
 
 
+def test_quick_intermediate_stage_keeps_processing_status(tmp_path):
+    storage, services, _ = _services(tmp_path)
+    audio_started = threading.Event()
+    release_audio = threading.Event()
+    original_audio = services.analyze_run_audio
+
+    def paused_audio(run_id, config):
+        audio_started.set()
+        assert release_audio.wait(5)
+        return original_audio(run_id, config)
+
+    services.analyze_run_audio = paused_audio
+    jobs = JobManager(storage, services, executor=ThreadPoolExecutor(max_workers=1))
+    client = TestClient(create_app(storage=storage, services=services, jobs=jobs, env={}))
+    with client:
+        run_id = _create_manual(client)
+        assert client.post(f"/api/runs/{run_id}/quick-caption").status_code == 202
+        assert audio_started.wait(5)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            run = client.get(f"/api/runs/{run_id}").json()
+            if run["stages"]["frames"] == "complete":
+                break
+            time.sleep(0.01)
+        assert run["stages"]["frames"] == "complete"
+        assert run["status"] == "processing"
+        release_audio.set()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            run = client.get(f"/api/runs/{run_id}").json()
+            if run["status"] == "ready":
+                break
+            time.sleep(0.02)
+        assert run["status"] == "ready"
+        assert run["stages"]["captions"] == "complete"
+    jobs.close()
+
+
 def test_frame_selection_is_persisted_and_invalidates_downstream(tmp_path):
     client, _ = _manual_client(tmp_path)
     with client:
         run_id = _create_manual(client)
         client.post(f"/api/runs/{run_id}/frames", json={"method": "uniform", "totalFrames": 6, "anchorCount": 0, "highChangeCount": 0, "minSpacingSec": 1.0, "changeSensitivity": 0.5})
-        selected = ["frame_001.jpg", "frame_003.jpg", "frame_004.jpg"]
+        selected = ["frame_001.jpg", "frame_003.jpg", "frame_004.jpg", "frame_005.jpg", "frame_006.jpg", "frame_002.jpg"]
         response = client.patch(f"/api/runs/{run_id}/frames/selection", json={"includedFrameIds": selected})
         assert response.status_code == 200
         run = client.get(f"/api/runs/{run_id}").json()
-        assert [frame["id"] for frame in run["frames"]["frames"] if frame["included"]] == selected
+        assert {frame["id"] for frame in run["frames"]["frames"] if frame["included"]} == set(selected)
         assert run["stages"]["evidence"] == "invalidated"
         assert client.patch(f"/api/runs/{run_id}/frames/selection", json={"includedFrameIds": ["frame_999.jpg", "frame_001.jpg"]}).status_code == 422
+
+
+def test_invalid_stage_configuration_is_rejected_before_job_creation(tmp_path):
+    client, _ = _manual_client(tmp_path)
+    with client:
+        run_id = _create_manual(client)
+        invalid_frames = {"method": "hybrid", "totalFrames": 4, "anchorCount": 0, "highChangeCount": 0, "minSpacingSec": 1.0, "changeSensitivity": 0.5}
+        invalid_caption = {"temperature": 0.4, "minWords": 40, "maxWords": 20, "strictGrounding": True, "audioEvidenceMode": "use-if-present", "focusedRepair": True, "styles": ["formal"]}
+        invalid_audio = {"mode": "automatic", "maxDurationSec": 30, "sampleRateHz": 16000, "minRmsEnergy": 0.01, "strategy": "custom-range"}
+        assert client.post(f"/api/runs/{run_id}/frames", json=invalid_frames).status_code == 422
+        assert client.post(f"/api/runs/{run_id}/captions", json=invalid_caption).status_code == 422
+        assert client.post(f"/api/runs/{run_id}/audio", json=invalid_audio).status_code == 422
+        run = client.get(f"/api/runs/{run_id}").json()
+        assert run["status"] == "pending"
+        assert run["stages"]["frames"] == "waiting"
 
 
 def test_conflicting_stage_job_returns_409_and_blocks_delete(tmp_path):
@@ -176,3 +234,50 @@ def test_failed_stage_is_sanitized_and_active_registry_is_cleared(tmp_path):
         assert "private provider" not in (failed["error"] or "")
         assert not jobs.is_active(run_id)
         assert storage.run_dir(run_id).exists()
+
+
+def test_evidence_max_tokens_and_caption_policy_reach_provider_attempts(tmp_path):
+    frames = []
+    for index in range(6):
+        path = tmp_path / f"frame_{index}.jpg"
+        path.write_bytes(b"jpeg")
+        frames.append(ExtractedFrame(path, float(index), "uniform", 0.1))
+    config = load_routed_gemma_config({"GOOGLE_API_KEY": "test-key"})
+    seen_max_tokens = []
+    prompts = []
+
+    class RecordingGemma:
+        def chat_completion_text(self, messages, temperature, **kwargs):
+            del temperature
+            if kwargs.get("max_tokens") is not None:
+                seen_max_tokens.append(kwargs["max_tokens"])
+                return json.dumps({"scene": "a room", "main_subjects": ["person"], "actions": ["walking"]})
+            prompts.append(messages[-1]["content"][-1]["text"])
+            return json.dumps({"formal": "A person walks through a bright room while six chronological frames show the visible movement clearly."})
+
+    evidence, _ = generate_routed_evidence(
+        "interactive",
+        frames,
+        unavailable_audio(16_000, "no audio"),
+        RouteDecision("visual", False, "test"),
+        config=config,
+        client_factory=lambda _: RecordingGemma(),
+        remaining_time_fn=lambda: 500.0,
+        max_tokens=512,
+    )
+    captions = generate_routed_captions_from_evidence(
+        Task("interactive", "video", ("formal",)),
+        frames,
+        {**evidence, "audio": {"status": "unavailable", "allowed_caption_facts": []}},
+        config=config,
+        client_factory=lambda _: RecordingGemma(),
+        remaining_time_fn=lambda: 500.0,
+        min_words=8,
+        max_words=16,
+        audio_evidence_mode="ignore",
+        focused_repair=False,
+    )
+    assert captions["formal"]
+    assert seen_max_tokens == [512]
+    assert "8-16 word caption" in prompts[0]
+    assert "Ignore all audio evidence" in prompts[0]

@@ -602,7 +602,7 @@ def _select_configured_hybrid_frames(
 
     ranked = sorted(
         metrics,
-        key=lambda item: _quality_score(item, list(metrics)) * (0.5 + change_sensitivity),
+        key=lambda item: _configured_quality_score(item, list(metrics), change_sensitivity),
         reverse=True,
     )
     wanted_dynamic = min(high_change_count, max(0, total_frames - len(selected)))
@@ -628,6 +628,20 @@ def _metric_score(frame: ExtractedFrame, metrics: Sequence[_CandidateMetrics]) -
         if metric.frame is frame:
             return _quality_score(metric, list(metrics))
     return float(frame.change_score or 0.0)
+
+
+def _configured_quality_score(
+    metric: _CandidateMetrics,
+    metrics: list[_CandidateMetrics],
+    change_sensitivity: float,
+) -> float:
+    """Weight visual quality versus temporal change without a global multiplier."""
+    sharpness_score = _normalize_metric(metric.sharpness, [item.sharpness for item in metrics])
+    scene_score = _normalize_metric(metric.scene_change, [item.scene_change for item in metrics])
+    motion_score = _normalize_metric(metric.motion, [item.motion for item in metrics])
+    change_weight = 0.4 + (0.4 * change_sensitivity)
+    quality_weight = 1.0 - change_weight
+    return quality_weight * sharpness_score + change_weight * ((scene_score + motion_score) / 2.0)
 
 
 def select_aks_lite_frames(

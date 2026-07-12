@@ -29,7 +29,7 @@ function LabLayout() {
             title="Could not load run"
             description={String((error as Error).message)}
           />
-        ) : run?.status === "error" ? (
+        ) : run?.mode === "quick" && run.status === "error" ? (
           <ErrorState
             title="Pipeline processing failed"
             description={run.error ?? "GemmaClip could not complete this run."}

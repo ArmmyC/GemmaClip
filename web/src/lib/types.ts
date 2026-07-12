@@ -75,7 +75,7 @@ export interface AudioConfig {
   maxDurationSec: number;
   sampleRateHz: number;
   minRmsEnergy: number;
-  strategy: "highest-energy" | "first-non-silent" | "custom-range";
+  strategy: "highest-energy" | "first-non-silent";
   customStartSec?: number;
   customEndSec?: number;
 }

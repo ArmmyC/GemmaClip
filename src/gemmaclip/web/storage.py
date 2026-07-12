@@ -97,15 +97,16 @@ class RunStorage:
         return path
 
     def read_run(self, run_id: str) -> dict[str, Any]:
-        path = self.run_dir(run_id) / "run.json"
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError as exc:
-            raise RunNotFound("Run not found.") from exc
-        if not isinstance(payload, dict):
-            raise StorageError("Stored run metadata is invalid.")
-        _ensure_run_shape(payload)
-        return payload
+        with self._lock:
+            path = self.run_dir(run_id) / "run.json"
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError as exc:
+                raise RunNotFound("Run not found.") from exc
+            if not isinstance(payload, dict):
+                raise StorageError("Stored run metadata is invalid.")
+            _ensure_run_shape(payload)
+            return payload
 
     def public_run(self, run: Mapping[str, Any]) -> dict[str, Any]:
         return {key: value for key, value in run.items() if not key.startswith("_")}

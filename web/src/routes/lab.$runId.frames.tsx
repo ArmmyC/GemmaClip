@@ -135,14 +135,14 @@ function FramesStage() {
           </RadioGroup>
 
           <Field label="Total frames" hint={<span className="font-mono">{total}</span>}>
-              <Slider value={[total]} onValueChange={([v]) => setTotal(v)} min={2} max={16} step={1} />
+              <Slider value={[total]} onValueChange={([v]) => { setTotal(v); setAnchors((current) => Math.min(current, v)); setHigh((current) => Math.min(current, Math.max(0, v - Math.min(anchors, v)))); }} min={6} max={16} step={1} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Anchors" hint={<span className="font-mono">{anchors}</span>}>
-              <Slider value={[anchors]} onValueChange={([v]) => setAnchors(v)} min={0} max={6} step={1} />
+              <Slider value={[anchors]} onValueChange={([v]) => setAnchors(Math.min(v, total - high))} min={0} max={6} step={1} />
             </Field>
             <Field label="High change" hint={<span className="font-mono">{high}</span>}>
-              <Slider value={[high]} onValueChange={([v]) => setHigh(v)} min={0} max={8} step={1} />
+              <Slider value={[high]} onValueChange={([v]) => setHigh(Math.min(v, total - anchors))} min={0} max={8} step={1} />
             </Field>
           </div>
           <Field label="Min spacing" hint={<span className="font-mono">{spacing.toFixed(1)}s</span>}>

@@ -10,7 +10,8 @@ export function useRun(runId: string) {
     queryFn: () => api.getRun(runId),
     refetchInterval: (query) => {
       const status = query.state.data?.status;
-      return status === "pending" || status === "processing" ? 1000 : false;
+      const mode = query.state.data?.mode;
+      return status === "processing" || (status === "pending" && mode !== "manual") ? 1000 : false;
     },
   });
 }

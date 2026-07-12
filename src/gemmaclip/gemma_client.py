@@ -314,11 +314,13 @@ class GemmaClient:
         temperature: float,
         *,
         use_response_format: bool | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         payload = self._post_chat_completion(
             messages=messages,
             temperature=temperature,
             use_response_format=use_response_format,
+            max_tokens=max_tokens,
         )
         return extract_message_text(payload)
 
@@ -328,11 +330,13 @@ class GemmaClient:
         temperature: float,
         *,
         use_response_format: bool | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         content = self.chat_completion_text(
             messages=messages,
             temperature=temperature,
             use_response_format=use_response_format,
+            max_tokens=max_tokens,
         )
         return parse_json_object(content)
 
@@ -342,6 +346,7 @@ class GemmaClient:
         temperature: float,
         *,
         use_response_format: bool | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         if not self._config.base_url:
             raise RuntimeError("Fireworks client requires a base URL.")
@@ -356,6 +361,7 @@ class GemmaClient:
                 temperature=temperature,
                 model=model,
                 use_response_format=use_response_format,
+                max_tokens=max_tokens,
             )
             try:
                 response = self._client.post(
@@ -595,6 +601,7 @@ class GoogleGeminiClient:
         temperature: float,
         *,
         use_response_format: bool | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         types = _load_google_types()
         contents, system_instruction, uploaded_file_names = _convert_messages_to_google_contents(
@@ -605,7 +612,7 @@ class GoogleGeminiClient:
         request_config = _build_google_generation_config(
             system_instruction=system_instruction,
             temperature=temperature,
-            max_tokens=self._config.max_tokens,
+            max_tokens=max_tokens or self._config.max_tokens,
             use_json=_google_use_json_response(use_response_format),
         )
 
@@ -646,11 +653,13 @@ class GoogleGeminiClient:
         temperature: float,
         *,
         use_response_format: bool | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         text = self.chat_completion_text(
             messages,
             temperature,
             use_response_format=use_response_format,
+            max_tokens=max_tokens,
         )
         return parse_json_object(text)
 
@@ -673,6 +682,7 @@ class OpenRouterClient:
         temperature: float,
         *,
         use_response_format: bool | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         if not self._config.base_url:
             raise RuntimeError("OpenRouter client requires a base URL.")
@@ -682,6 +692,7 @@ class OpenRouterClient:
             messages=_convert_messages_to_openrouter_messages(messages),
             temperature=temperature,
             use_response_format=use_response_format,
+            max_tokens=max_tokens,
         )
         max_attempts = DEFAULT_OPENROUTER_MAX_RETRIES + 1
         last_error: Exception | None = None
@@ -746,11 +757,13 @@ class OpenRouterClient:
         temperature: float,
         *,
         use_response_format: bool | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         text = self.chat_completion_text(
             messages,
             temperature,
             use_response_format=use_response_format,
+            max_tokens=max_tokens,
         )
         return parse_json_object(text)
 
@@ -762,12 +775,13 @@ def build_chat_completion_payload(
     temperature: float,
     model: str | None = None,
     use_response_format: bool | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model or config.model,
         "messages": list(messages),
         "temperature": temperature,
-        "max_tokens": config.max_tokens,
+        "max_tokens": max_tokens or config.max_tokens,
         "top_k": DEFAULT_TOP_K,
         "presence_penalty": 0,
         "frequency_penalty": 0,
@@ -783,12 +797,13 @@ def build_openrouter_chat_completion_payload(
     messages: Sequence[Mapping[str, Any]],
     temperature: float,
     use_response_format: bool | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": config.model,
         "messages": list(messages),
         "temperature": temperature,
-        "max_tokens": config.max_tokens,
+        "max_tokens": max_tokens or config.max_tokens,
     }
     if use_response_format if use_response_format is not None else config.use_response_format:
         payload["response_format"] = {"type": "json_object"}

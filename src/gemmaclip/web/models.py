@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gemmaclip.routed import GenerationOutcome
 
@@ -34,15 +34,21 @@ class PresetRequest(ApiModel):
 
 class FrameRequest(ApiModel):
     method: Literal["uniform", "aks-lite", "hybrid"] = "hybrid"
-    total_frames: int = Field(default=6, ge=2, le=16)
+    total_frames: int = Field(default=6, ge=6, le=16)
     anchor_count: int = Field(default=4, ge=0, le=16)
     high_change_count: int = Field(default=2, ge=0, le=16)
     min_spacing_sec: float = Field(default=1.0, gt=0, le=5)
     change_sensitivity: float = Field(default=0.5, ge=0, le=1)
 
+    @model_validator(mode="after")
+    def validate_selection_counts(self) -> "FrameRequest":
+        if self.anchor_count + self.high_change_count > self.total_frames:
+            raise ValueError("anchorCount and highChangeCount must fit within totalFrames.")
+        return self
+
 
 class FrameSelectionRequest(ApiModel):
-    included_frame_ids: list[str] = Field(min_length=2, max_length=16)
+    included_frame_ids: list[str] = Field(min_length=6, max_length=16)
 
 
 class AudioRequest(ApiModel):
@@ -50,7 +56,7 @@ class AudioRequest(ApiModel):
     max_duration_sec: float = Field(default=30, ge=1, le=30)
     sample_rate_hz: int = Field(default=16000, gt=0, le=192000)
     min_rms_energy: float = Field(default=0.01, ge=0, le=1)
-    strategy: Literal["highest-energy", "first-non-silent", "custom-range"] = "highest-energy"
+    strategy: Literal["highest-energy", "first-non-silent"] = "highest-energy"
 
 
 class EvidenceRequest(ApiModel):
@@ -70,6 +76,14 @@ class CaptionRequest(ApiModel):
     audio_evidence_mode: Literal["ignore", "use-if-present", "require"] = "use-if-present"
     focused_repair: bool = True
     styles: list[Literal["formal", "sarcastic", "humorous-tech", "humorous-non-tech"]] = Field(min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_word_bounds(self) -> "CaptionRequest":
+        if self.min_words > self.max_words:
+            raise ValueError("minWords must be less than or equal to maxWords.")
+        if not self.strict_grounding:
+            raise ValueError("Strict grounding is required for Gemma Lab captions.")
+        return self
 
 
 class ExperimentRequest(ApiModel):

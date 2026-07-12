@@ -39,6 +39,8 @@ Manual stage endpoints are `POST /api/runs/{run_id}/metadata`, `POST /api/runs/{
 
 Audio supports the MVP's highest-energy and first-window (first-N-seconds) selectors. Custom waveform ranges remain intentionally unavailable until a persisted range model is added.
 
+Interactive evidence uses a consistent six-frame minimum. The Fast preset therefore selects six uniform frames with audio disabled, and the API rejects smaller frame sets before creating a stage job.
+
 Stage jobs use a single in-memory run lock. Only one job may mutate a run at a time, conflicting requests return `409`, active runs cannot be deleted, and interrupted processing is recovered as a safe error on restart. This remains intentionally single-process for the demo; use an external queue and shared lock before production deployment.
 
 Each run stores its upload, six selected frames, sanitized evidence, and captions below a server-generated run ID. Generated media is ignored by Git and never stored under frontend static assets.

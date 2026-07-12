@@ -36,13 +36,13 @@ function CaptionsStage() {
   const [temp, setTemp] = useState(run?.captions.config.temperature ?? 0.7);
   const [minW, setMinW] = useState(run?.captions.config.minWords ?? 12);
   const [maxW, setMaxW] = useState(run?.captions.config.maxWords ?? 48);
-  const [strict, setStrict] = useState(run?.captions.config.strictGrounding ?? true);
+  const strict = true;
   const [audioMode, setAudioMode] = useState<CaptionConfig["audioEvidenceMode"]>(
     run?.captions.config.audioEvidenceMode ?? "use-if-present",
   );
   const [repair, setRepair] = useState(run?.captions.config.focusedRepair ?? true);
   const [styles, setStyles] = useState<CaptionStyle[]>(
-    run?.captions.config.styles ?? ["formal", "humorous-tech", "social", "accessibility"],
+    run?.captions.config.styles ?? ["formal", "sarcastic", "humorous-tech", "humorous-non-tech"],
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,14 +50,14 @@ function CaptionsStage() {
   useEffect(() => {
     if (!run) return;
     setTemp(run.captions.config.temperature); setMinW(run.captions.config.minWords); setMaxW(run.captions.config.maxWords);
-    setStrict(run.captions.config.strictGrounding); setAudioMode(run.captions.config.audioEvidenceMode); setRepair(run.captions.config.focusedRepair); setStyles(run.captions.config.styles);
+    setAudioMode(run.captions.config.audioEvidenceMode); setRepair(run.captions.config.focusedRepair); setStyles(run.captions.config.styles);
   }, [run]);
 
   if (!run) return <ProcessingState />;
   if (run.stages.captions === "active") return <ProcessingState description={run.progressMessage ?? "Writing captions."} />;
   if (run.stages.captions === "error") return <StageErrorState stage="Captions" description={run.stageErrors?.captions ?? run.error ?? undefined} onRetry={() => generate()} />;
   const draft: CaptionRequest = { temperature: temp, minWords: minW, maxWords: maxW, strictGrounding: strict, audioEvidenceMode: audioMode, focusedRepair: repair, styles };
-  const dirty = temp !== run.captions.config.temperature || minW !== run.captions.config.minWords || maxW !== run.captions.config.maxWords || strict !== run.captions.config.strictGrounding || audioMode !== run.captions.config.audioEvidenceMode || repair !== run.captions.config.focusedRepair || JSON.stringify(styles) !== JSON.stringify(run.captions.config.styles);
+  const dirty = temp !== run.captions.config.temperature || minW !== run.captions.config.minWords || maxW !== run.captions.config.maxWords || audioMode !== run.captions.config.audioEvidenceMode || repair !== run.captions.config.focusedRepair || JSON.stringify(styles) !== JSON.stringify(run.captions.config.styles);
 
   function toggleStyle(s: CaptionStyle) {
     setStyles((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
@@ -104,17 +104,17 @@ function CaptionsStage() {
         >
           <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-background/60 px-3 py-2 text-xs text-muted-foreground">
             <span>{dirty ? "Unsaved configuration. Compare will be invalidated after generation." : "Stored configuration. Choose styles and settings, then generate captions."}</span>
-            <Button variant="ghost" size="sm" onClick={() => { setTemp(run.captions.config.temperature); setMinW(run.captions.config.minWords); setMaxW(run.captions.config.maxWords); setStrict(run.captions.config.strictGrounding); setAudioMode(run.captions.config.audioEvidenceMode); setRepair(run.captions.config.focusedRepair); setStyles(run.captions.config.styles); }} disabled={busy || !dirty}>Reset</Button>
+            <Button variant="ghost" size="sm" onClick={() => { setTemp(run.captions.config.temperature); setMinW(run.captions.config.minWords); setMaxW(run.captions.config.maxWords); setAudioMode(run.captions.config.audioEvidenceMode); setRepair(run.captions.config.focusedRepair); setStyles(run.captions.config.styles); }} disabled={busy || !dirty}>Reset</Button>
           </div>
           <Field label="Temperature" hint={<span className="font-mono">{temp.toFixed(2)}</span>}>
             <Slider value={[temp]} onValueChange={([v]) => setTemp(v)} min={0} max={1.2} step={0.05} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Min words" hint={<span className="font-mono">{minW}</span>}>
-              <Slider value={[minW]} onValueChange={([v]) => setMinW(v)} min={4} max={40} step={1} />
+              <Slider value={[minW]} onValueChange={([v]) => setMinW(Math.min(v, maxW))} min={1} max={120} step={1} />
             </Field>
             <Field label="Max words" hint={<span className="font-mono">{maxW}</span>}>
-              <Slider value={[maxW]} onValueChange={([v]) => setMaxW(v)} min={12} max={120} step={1} />
+              <Slider value={[maxW]} onValueChange={([v]) => setMaxW(Math.max(v, minW))} min={1} max={120} step={1} />
             </Field>
           </div>
           <Field label="Audio evidence">
@@ -127,13 +127,13 @@ function CaptionsStage() {
               </SelectContent>
             </Select>
           </Field>
-          <label className="flex items-center justify-between rounded-lg border border-border bg-background p-3">
+          <div className="flex items-center justify-between rounded-lg border border-border bg-background p-3">
             <div>
               <div className="text-sm font-medium">Strict grounding</div>
-              <div className="text-xs text-muted-foreground">Reject captions that add unsupported claims.</div>
+              <div className="text-xs text-muted-foreground">Always enabled so captions cannot add unsupported claims.</div>
             </div>
-            <Switch checked={strict} onCheckedChange={setStrict} />
-          </label>
+            <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-success">required</span>
+          </div>
           <label className="flex items-center justify-between rounded-lg border border-border bg-background p-3">
             <div>
               <div className="text-sm font-medium">Focused repair</div>
