@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from contextlib import asynccontextmanager
 from collections.abc import Mapping
+from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from gemmaclip.web.api import create_api_router
 from gemmaclip.web.jobs import JobManager
+from gemmaclip.web.models import HealthResponse, MediaToolsResponse
+from gemmaclip.web.observability import configure_event_logging
 from gemmaclip.web.services import WebPipelineError, WebServices
 from gemmaclip.web.storage import InvalidRunId, RunNotFound, RunStorage, StorageError, UnsafeAsset
 
@@ -26,14 +30,18 @@ def create_app(
     env: Mapping[str, str] | None = None,
 ) -> FastAPI:
     values = dict(env if env is not None else os.environ)
+    configure_event_logging(values)
     active_storage = storage or RunStorage.from_env(values)
     active_services = services or WebServices(active_storage, env=values)
     active_jobs = jobs or JobManager(active_storage, active_services)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        active_storage.recover_interrupted_runs()
-        active_storage.cleanup_expired_runs(active_jobs.active_run_ids())
+        try:
+            active_storage.recover_interrupted_runs()
+            active_storage.cleanup_expired_runs(active_jobs.active_run_ids())
+        except Exception:
+            LOGGER.warning("Web startup maintenance failed safely.")
         try:
             yield
         finally:
@@ -85,7 +93,56 @@ def create_app(
         return JSONResponse(status_code=500, content={"detail": "The request failed safely. Please retry."})
 
     app.include_router(create_api_router())
+    static_root = Path(values["GEMMACLIP_WEB_STATIC_DIR"]).resolve() if values.get("GEMMACLIP_WEB_STATIC_DIR") else None
+    _mount_frontend(app, static_root)
     return app
+
+
+def build_health_response(storage: RunStorage, services: WebServices, jobs: JobManager) -> HealthResponse:
+    storage_ok = storage.health_check()
+    media = MediaToolsResponse(
+        ffmpeg="available" if shutil.which("ffmpeg") else "unavailable",
+        ffprobe="available" if shutil.which("ffprobe") else "unavailable",
+    )
+    job_ok = jobs.health_available()
+    if not storage_ok or not job_ok:
+        status = "unavailable"
+    elif media.ffmpeg != "available" or media.ffprobe != "available" or not services.credentials_configured():
+        status = "degraded"
+    else:
+        status = "ok"
+    return HealthResponse(
+        status=status,
+        storage="available" if storage_ok else "unavailable",
+        media_tools=media,
+        providers_configured=services.credentials_configured(),
+        job_manager="available" if job_ok else "unavailable",
+    )
+
+
+def _mount_frontend(app: FastAPI, static_root: Path | None) -> None:
+    if static_root is None or not static_root.is_dir():
+        return
+    assets = static_root / "assets"
+    if assets.is_dir():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/assets", StaticFiles(directory=assets, check_dir=True), name="frontend-assets")
+    index_path = static_root / "index.html"
+    if not index_path.is_file():
+        return
+
+    @app.get("/{frontend_path:path}", include_in_schema=False)
+    async def frontend_fallback(frontend_path: str):
+        if frontend_path == "" or frontend_path == "index.html":
+            return FileResponse(index_path, media_type="text/html")
+        if frontend_path == "api" or frontend_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found.")
+        if frontend_path == "assets" or frontend_path.startswith("assets/"):
+            raise HTTPException(status_code=404, detail="Frontend asset not found.")
+        if ".." in Path(frontend_path).parts:
+            raise HTTPException(status_code=404, detail="Frontend route not found.")
+        return FileResponse(index_path, media_type="text/html")
 
 
 def main() -> None:

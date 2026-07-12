@@ -44,6 +44,7 @@ from gemmaclip.web.adapters import (
     selected_route_from_evidence,
 )
 from gemmaclip.web.storage import RunStorage
+from gemmaclip.web.observability import configure_event_logging, log_event, safe_model_label
 
 
 DEFAULT_STYLES = ("formal", "sarcastic", "humorous_tech", "humorous_non_tech")
@@ -79,6 +80,7 @@ class WebServices:
     ) -> None:
         self.storage = storage
         self.env = dict(env if env is not None else os.environ)
+        configure_event_logging(self.env)
         self.dependencies = dependencies or PipelineDependencies()
 
     def credentials_configured(self) -> bool:
@@ -113,7 +115,9 @@ class WebServices:
             payload["stageErrors"].pop("video", None)
             payload["runtimes"]["video"] = round(time.monotonic() - started, 3)
 
-        return self.storage.update_run(run_id, update)
+        result = self.storage.update_run(run_id, update)
+        log_event("metadata_completed", run_id=run_id, mode=result.get("mode", "manual"), stage="video", status="complete", duration_seconds=result.get("runtimes", {}).get("video", 0.0), secrets=self.env)
+        return result
 
     def apply_preset(self, run_id: str, preset: str) -> dict[str, Any]:
         if preset not in {"fast", "balanced", "maximum", "custom"}:
@@ -191,7 +195,9 @@ class WebServices:
             payload["stages"]["frames"] = "complete"
             _mark_stage_ready(payload, "frames", "Frames updated", time.monotonic() - started)
 
-        return self.storage.update_run(run_id, complete)
+        result = self.storage.update_run(run_id, complete)
+        log_event("frames_completed", run_id=run_id, mode=result.get("mode", "manual"), stage="frames", status="complete", duration_seconds=result.get("runtimes", {}).get("frames", 0.0), artifact_count=len(result.get("frames", {}).get("frames", [])), secrets=self.env)
+        return result
 
     def update_frame_selection(self, run_id: str, included_ids: Sequence[str]) -> dict[str, Any]:
         run = self.storage.read_run(run_id)
@@ -261,7 +267,9 @@ class WebServices:
             payload["stages"]["audio"] = "complete"
             _mark_stage_ready(payload, "audio", "Audio analyzed", time.monotonic() - started)
 
-        return self.storage.update_run(run_id, complete)
+        result = self.storage.update_run(run_id, complete)
+        log_event("audio_completed", run_id=run_id, mode=result.get("mode", "manual"), stage="audio", status="complete", duration_seconds=result.get("runtimes", {}).get("audio", 0.0), artifact_count=len(result.get("audio", {}).get("segment", {}).get("waveform", [])), secrets=self.env)
+        return result
 
     def generate_run_evidence(
         self,
@@ -341,7 +349,9 @@ class WebServices:
             payload["stages"]["evidence"] = "complete"
             _mark_stage_ready(payload, "evidence", "Evidence updated", time.monotonic() - started)
 
-        return self.storage.update_run(run_id, complete)
+        result = self.storage.update_run(run_id, complete)
+        log_event("evidence_completed", run_id=run_id, mode=result.get("mode", "manual"), stage="evidence", status="complete", duration_seconds=result.get("runtimes", {}).get("evidence", 0.0), provider=execution.provider, model=safe_model_label(execution.model), modality=execution.modality, fallback_used=execution.fallback_used, secrets=self.env)
+        return result
 
     def generate_run_captions(
         self,
@@ -406,7 +416,9 @@ class WebServices:
             _store_generation_outcome(payload, outcome or GENERATION_OUTCOME_MODEL, (outcome == GENERATION_OUTCOME_EVIDENCE_FALLBACK))
             _mark_stage_ready(payload, "captions", "Captions generated", time.monotonic() - started)
 
-        return self.storage.update_run(run_id, complete)
+        result = self.storage.update_run(run_id, complete)
+        log_event("captions_completed", run_id=run_id, mode=result.get("mode", "manual"), stage="captions", status="complete", duration_seconds=result.get("runtimes", {}).get("captions", 0.0), generation_outcome=result.get("generationOutcome"), degraded=result.get("degraded", False), secrets=self.env)
+        return result
 
     def create_run_experiment(self, run_id: str, label: str | None = None, caption_style: str = "formal") -> dict[str, Any]:
         run = self.storage.read_run(run_id)
@@ -443,7 +455,9 @@ class WebServices:
             "degraded": bool(run.get("degraded", False)),
         }
         self.storage.write_artifact_json(run_id, f"snapshots/{experiment['id']}.json", experiment)
-        return self.storage.update_run(run_id, lambda payload: payload["experiments"].append(experiment) or payload)
+        result = self.storage.update_run(run_id, lambda payload: payload["experiments"].append(experiment) or payload)
+        log_event("experiment_saved", run_id=run_id, mode=result.get("mode", "manual"), stage="compare", status="complete", duration_seconds=result.get("runtimes", {}).get("compare", 0.0), artifact_count=len(result.get("experiments", [])), secrets=self.env)
+        return result
 
     def compare_experiments(self, run_id: str, left_id: str, right_id: str) -> dict[str, Any]:
         run = self.storage.read_run(run_id)
@@ -516,14 +530,18 @@ class WebServices:
                 payload["status"] = "ready"
                 payload["activeStage"] = "compare"
                 payload["progressMessage"] = "Complete"
-            return self.storage.update_run(run_id, complete)
+            result = self.storage.update_run(run_id, complete)
+            log_event("quick_completed", run_id=run_id, mode="quick", stage="captions", status="ready", generation_outcome=result.get("generationOutcome"), degraded=result.get("degraded", False), secrets=self.env)
+            return result
 
         notify("evidence", "Building grounded evidence")
         self.generate_run_evidence(run_id, {"route": "auto", "temperature": 0.0, "maxTokens": 2048, "provider": "automatic", "showPromptStructure": False, "showRawJson": True}, remaining_time_fn=remaining)
         notify("captions", "Writing captions")
         result = self.generate_run_captions(run_id, {"model": "gemma-4-31b", "temperature": 0.4, "minWords": 18, "maxWords": 35, "strictGrounding": True, "audioEvidenceMode": "use-if-present", "focusedRepair": True, "styles": ["formal", "sarcastic", "humorous-tech", "humorous-non-tech"]}, remaining_time_fn=remaining)
         self.storage.update_run(run_id, lambda payload: payload.update(status="ready", activeStage="compare", progressMessage="Complete"))
-        return self.storage.public_run(self.storage.read_run(run_id))
+        result = self.storage.public_run(self.storage.read_run(run_id))
+        log_event("quick_completed", run_id=run_id, mode="quick", stage="captions", status="ready", generation_outcome=result.get("generationOutcome"), degraded=result.get("degraded", False), secrets=self.env)
+        return result
 
     def _load_evidence_debug(self, run_id: str) -> dict[str, Any]:
         debug_dir = self.storage.run_dir(run_id) / "debug"

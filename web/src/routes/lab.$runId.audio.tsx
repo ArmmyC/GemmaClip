@@ -15,7 +15,7 @@ import { api } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { runKey } from "@/lib/hooks";
 import type { AudioMode, AudioConfig, AudioRequest } from "@/lib/types";
-import { ProcessingState, StageErrorState, StaleStageNotice } from "@/components/StateViews";
+import { InvalidationPreview, ProcessingState, StageErrorState, StaleStageNotice } from "@/components/StateViews";
 
 export const Route = createFileRoute("/lab/$runId/audio")({
   component: AudioStage,
@@ -73,6 +73,7 @@ function AudioStage() {
         description="Audio energy helps select a candidate segment. Gemma decides whether it actually contains speech or useful evidence."
       />
       {run.stages.audio === "invalidated" && <StaleStageNotice />}
+      {dirty && <InvalidationPreview stage="audio" />}
       {notice && <div className="mb-4 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-sm text-success" role="status">{notice}</div>}
       {error && <div className="mb-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger" role="alert">{error}</div>}
 

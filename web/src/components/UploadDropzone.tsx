@@ -6,9 +6,10 @@ interface Props {
   onFile?: (file: File) => void;
   compact?: boolean;
   className?: string;
+  disabled?: boolean;
 }
 
-export function UploadDropzone({ onFile, compact, className }: Props) {
+export function UploadDropzone({ onFile, compact, className, disabled = false }: Props) {
   const [hover, setHover] = useState(false);
   const [selected, setSelected] = useState<File | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -21,18 +22,20 @@ export function UploadDropzone({ onFile, compact, className }: Props) {
 
   return (
     <label
-      onDragOver={(event) => { event.preventDefault(); setHover(true); }}
+      onDragOver={(event) => { if (disabled) return; event.preventDefault(); setHover(true); }}
       onDragLeave={() => setHover(false)}
-      onDrop={(event) => { event.preventDefault(); setHover(false); handleFiles(event.dataTransfer.files); }}
+      onDrop={(event) => { if (disabled) return; event.preventDefault(); setHover(false); handleFiles(event.dataTransfer.files); }}
       className={cn(
-        "group relative block cursor-pointer overflow-hidden rounded-xl border border-white/10 bg-card/80 text-center transition-[border-color,background-color] duration-200",
+        "group relative block overflow-hidden rounded-xl border border-white/10 bg-card/80 text-center transition-[border-color,background-color] duration-200",
+        !disabled && "cursor-pointer",
+        disabled && "cursor-not-allowed opacity-60",
         "hover:border-white/20 hover:bg-card",
         hover && "border-ember bg-ember-soft/20",
         compact ? "p-6" : "p-8 sm:p-12",
         className,
       )}
     >
-      <input ref={inputRef} type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" onChange={(event) => handleFiles(event.target.files)} />
+      <input ref={inputRef} disabled={disabled} type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" onChange={(event) => handleFiles(event.target.files)} />
       <div className="pointer-events-none absolute inset-0 signal-grid opacity-70" />
       <div className="relative flex flex-col items-center gap-4">
         <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-white/10 bg-background text-ember">
@@ -50,7 +53,7 @@ export function UploadDropzone({ onFile, compact, className }: Props) {
           </div>
         ) : (
           <div>
-            <div className="font-display text-2xl font-semibold tracking-tight">Drop video to begin</div>
+            <div className="font-display text-2xl font-semibold tracking-tight">{disabled ? "Service unavailable" : "Drop video to begin"}</div>
             <div className="mt-2 font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">MP4 / WEBM / MOV</div>
           </div>
         )}

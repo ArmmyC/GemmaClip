@@ -17,7 +17,7 @@ import { api } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { runKey } from "@/lib/hooks";
 import type { EvidenceRequest, ModelRoute } from "@/lib/types";
-import { ProcessingState, StageErrorState, StaleStageNotice } from "@/components/StateViews";
+import { InvalidationPreview, ProcessingState, StageErrorState, StaleStageNotice } from "@/components/StateViews";
 
 export const Route = createFileRoute("/lab/$runId/evidence")({
   component: EvidenceStage,
@@ -90,6 +90,7 @@ function EvidenceStage() {
         description="Structured evidence separates what Gemma verified from what it might have misread. Captions can only reference this object."
       />
       {run.stages.evidence === "invalidated" && <StaleStageNotice />}
+      {dirty && <InvalidationPreview stage="evidence" />}
       {notice && <div className="mb-4 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-sm text-success" role="status">{notice}</div>}
       {error && <div className="mb-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger" role="alert">{error}</div>}
 
@@ -151,9 +152,7 @@ function EvidenceStage() {
             <Slider value={[maxTokens]} onValueChange={([v]) => setMaxTokens(v)} min={256} max={4096} step={64} />
           </Field>
           <Field label="Provider">
-            <code className="rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">
-              provider://gemma-gateway
-            </code>
+            <span className="font-mono text-xs text-muted-foreground">Automatic routed provider (server configured)</span>
           </Field>
           <label className="flex items-center justify-between rounded-lg border border-border bg-background p-3">
             <div>

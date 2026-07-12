@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftRight, Save, Beaker } from "lucide-react";
+import { ArrowLeftRight, Copy, Save, Beaker, Check } from "lucide-react";
 import { api, type ExperimentComparison } from "@/lib/api";
 import { useRun } from "@/lib/hooks";
 import { StageHeader } from "./lab.$runId.video";
@@ -84,8 +84,20 @@ function CompareStage() {
 }
 
 function ComparisonView({ comparison }: { comparison: ExperimentComparison }) {
-  const fields: Array<[string, keyof Experiment | string]> = [["frame method", "frameMethod"], ["frame count", "frameCount"], ["audio mode", "audioMode"], ["audio status", "audioStatus"], ["evidence route", "evidenceRoute"], ["provider", "evidenceProvider"], ["model", "evidenceModel"], ["modality", "evidenceModality"], ["evidence temperature", "evidenceTemperature"], ["caption temperature", "captionTemperature"], ["runtime", "runtimeMs"], ["outcome", "generationOutcome"]];
-  return <div className="space-y-6"><div className="grid gap-6 lg:grid-cols-2"><ExperimentColumn side="A" experiment={comparison.left} /><ExperimentColumn side="B" experiment={comparison.right} /></div><div className="overflow-hidden rounded-xl border border-border bg-card"><div className="flex items-center justify-between border-b border-border px-4 py-3"><div className="font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground">configuration diff</div><ArrowLeftRight className="h-4 w-4 text-muted-foreground" /></div><table className="w-full text-sm"><tbody className="divide-y divide-border">{fields.map(([label, field]) => <Row key={label} label={label} left={comparison.left[field as keyof Experiment]} right={comparison.right[field as keyof Experiment]} />)}</tbody></table></div></div>;
+  const [copied, setCopied] = useState(false);
+  const fields: Array<[string, keyof Experiment | string]> = [["snapshot label", "label"], ["saved at", "createdAt"], ["frame method", "frameMethod"], ["frame count", "frameCount"], ["audio mode", "audioMode"], ["audio status", "audioStatus"], ["evidence route", "evidenceRoute"], ["provider", "evidenceProvider"], ["model", "evidenceModel"], ["modality", "evidenceModality"], ["audio fallback", "evidenceFallbackOccurred"], ["evidence temperature", "evidenceTemperature"], ["caption temperature", "captionTemperature"], ["runtime", "runtimeMs"], ["outcome", "generationOutcome"], ["degraded", "degraded"]];
+  async function copySummary() {
+    const lines = [
+      `GemmaClip comparison: ${comparison.left.label} vs ${comparison.right.label}`,
+      ...fields.map(([label, field]) => `${label}: ${String(comparison.left[field as keyof Experiment] ?? "not recorded")} | ${String(comparison.right[field as keyof Experiment] ?? "not recorded")}`),
+      `caption (${comparison.left.style}) A: ${comparison.left.caption}`,
+      `caption (${comparison.right.style}) B: ${comparison.right.caption}`,
+    ];
+    await navigator.clipboard?.writeText(lines.join("\n"));
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  }
+  return <div className="space-y-6"><div className="flex justify-end"><Button type="button" variant="outline" size="sm" className="min-h-11 gap-2" onClick={copySummary}>{copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {copied ? "Copied" : "Copy comparison summary"}</Button></div><div className="grid gap-6 lg:grid-cols-2"><ExperimentColumn side="A" experiment={comparison.left} /><ExperimentColumn side="B" experiment={comparison.right} /></div><div className="overflow-hidden rounded-xl border border-border bg-card"><div className="flex items-center justify-between border-b border-border px-4 py-3"><div className="font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground">configuration diff</div><ArrowLeftRight className="h-4 w-4 text-muted-foreground" /></div><table className="w-full text-sm"><tbody className="divide-y divide-border">{fields.map(([label, field]) => <Row key={label} label={label} left={comparison.left[field as keyof Experiment]} right={comparison.right[field as keyof Experiment]} />)}</tbody></table></div></div>;
 }
 
 function Row({ label, left, right }: { label: string; left: unknown; right: unknown }) {

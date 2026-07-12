@@ -16,7 +16,7 @@ import { runKey } from "@/lib/hooks";
 import type { CaptionConfig, CaptionRequest, CaptionStyle } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { GenerationOutcomeNotice } from "@/components/GenerationOutcomeNotice";
-import { ProcessingState, StageErrorState, StaleStageNotice } from "@/components/StateViews";
+import { InvalidationPreview, ProcessingState, StageErrorState, StaleStageNotice } from "@/components/StateViews";
 
 export const Route = createFileRoute("/lab/$runId/captions")({
   component: CaptionsStage,
@@ -84,6 +84,7 @@ function CaptionsStage() {
       />
       <GenerationOutcomeNotice outcome={run.generationOutcome} compact />
       {run.stages.captions === "invalidated" && <StaleStageNotice />}
+      {dirty && <InvalidationPreview stage="captions" />}
       {notice && <div className="mb-4 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-sm text-success" role="status">{notice}</div>}
       {error && <div className="mb-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger" role="alert">{error}</div>}
 

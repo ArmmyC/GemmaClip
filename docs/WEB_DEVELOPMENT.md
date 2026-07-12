@@ -19,7 +19,22 @@ npm run dev
 
 Vite proxies `/api` to `http://127.0.0.1:8000`. Production builds use `npm run build` and default to the real API.
 
+For one-container production serving, use the separate web image:
+
+```bash
+docker build -f Dockerfile.web -t gemmaclip-web .
+docker run --rm -p 8000:8000 --env-file .env \
+  -e GEMMACLIP_WEB_HOST=0.0.0.0 \
+  -e GEMMACLIP_WEB_PORT=8000 \
+  -e GEMMACLIP_WEB_RUNS_DIR=/data/runs \
+  -v gemmaclip-runs:/data/runs gemmaclip-web
+```
+
+PowerShell users can run `scripts/run-web-production.ps1`; Docker Compose users can run `docker compose -f docker-compose.web.yml up --build`. `Dockerfile.web` builds the frontend in a Node stage, copies only `web/dist` into a Python 3.12 runtime, installs ffmpeg, runs as the unprivileged `gemmaclip` user, and serves the SPA plus FastAPI from one Uvicorn process. The competition `Dockerfile` is not repurposed.
+
 ## Configuration
+
+The web image sets `GEMMACLIP_WEB_HOST=0.0.0.0`, `GEMMACLIP_WEB_PORT=8000`, `GEMMACLIP_WEB_RUNS_DIR=/data/runs`, and `GEMMACLIP_WEB_STATIC_DIR=/app/web-dist`. Set `GEMMACLIP_LOG_FORMAT=json` for allow-listed JSON lifecycle logs; readable key/value logs remain the default.
 
 `GEMMACLIP_WEB_RUN_TTL_SECONDS` controls retention in seconds and defaults to `86400` (24 hours). A value of `0` or less disables automatic deletion.
 
@@ -32,6 +47,8 @@ Vite proxies `/api` to `http://127.0.0.1:8000`. Production builds use `npm run b
 - `VITE_GEMMACLIP_API_BASE_URL` — optional public API origin; empty uses same-origin `/api`.
 
 The production client does not silently fall back to mock data. The preserved `lovable/` directory remains the design snapshot.
+
+`GET /api/health` performs no live provider request. It reports `ok` only when storage, ffmpeg, ffprobe, the job manager, and at least one supported routed credential path are available. Missing credentials or media tools produce `degraded`; unavailable storage or a closed job manager produces `unavailable`. The response contains no paths, keys, endpoints, or environment values. A single web process owns the in-memory job executor; use an external queue and shared lock before scaling out.
 
 Gemma Lab now supports a manual stage flow in addition to Quick Caption. `/lab` creates a run, probes metadata, and waits for the user to run Frames, Audio, Evidence, and Captions individually. Each stage persists its configuration and artifact through the API, invalidates only its downstream dependents, and exposes a recoverable stage error. `Save Experiment` stores an immutable snapshot; Compare reads two real snapshots from the same run.
 
@@ -62,6 +79,8 @@ Evidence results report the actual safe provider, model, and modality plus wheth
 The working slice supports both `upload → metadata → manual Frames → manual Audio → manual Evidence → manual Captions → immutable experiments → Compare` and the original Quick Caption automatic flow. Both flows call the same Python stage services. Temporary audio candidates are removed after Audio inspection and Evidence generation; the Audio page exposes safe metadata and waveform data but does not retain a playable private artifact.
 
 ## Verification
+
+Container smoke checks should include `/api/health`, `/`, `/lab`, `/api/docs`, an API 404, and an unknown static asset 404. Use [docs/LIVE_SMOKE_TEST.md](LIVE_SMOKE_TEST.md) for the manual provider matrix and [docs/DEMO_SCRIPT.md](DEMO_SCRIPT.md) for the presentation flow.
 
 ```powershell
 python -m compileall src tests

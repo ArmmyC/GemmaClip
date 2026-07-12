@@ -43,7 +43,11 @@ class RunStorage:
         self.root = Path(root).resolve()
         self.max_upload_bytes = max_upload_bytes
         self.run_ttl_seconds = max(0, run_ttl_seconds)
-        self.root.mkdir(parents=True, exist_ok=True)
+        self._startup_error: str | None = None
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._startup_error = type(exc).__name__
         self._lock = threading.RLock()
 
     @classmethod
@@ -65,6 +69,22 @@ class RunStorage:
         run["_uploadSuffix"] = suffix
         self.write_run(run_id, run)
         return self.public_run(run)
+
+    def health_check(self) -> bool:
+        """Verify that the configured run root is usable without exposing its path."""
+
+        if self._startup_error is not None:
+            return False
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            if not self.root.is_dir():
+                return False
+            with tempfile.NamedTemporaryFile("wb", dir=self.root, prefix=".health-", delete=True) as handle:
+                handle.write(b"ok")
+                handle.flush()
+            return True
+        except OSError:
+            return False
 
     def run_dir(self, run_id: str, *, require_exists: bool = True) -> Path:
         validate_run_id(run_id)

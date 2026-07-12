@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { Menu, X } from "lucide-react";
 import { useState } from "react";
+import { ServiceHealthIndicator } from "@/components/ServiceHealth";
 
 interface Props {
   variant?: "landing" | "app" | "lab";
@@ -34,9 +35,8 @@ export function AppHeader({ variant = "app", className, labRunId }: Props) {
           {labRunId ? <NavLink to="/lab/$runId/video" params={{ runId: labRunId }} dark={variant === "lab"}>Gemma Lab</NavLink> : <NavLink to="/lab" dark={variant === "lab"}>Gemma Lab</NavLink>}
         </nav>
         <div className="flex items-center gap-2">
-          <span className={cn("hidden items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground sm:flex", variant === "lab" && "text-paper/55")}>
-            <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden="true" />
-            pure Gemma pipeline
+          <span className={cn("hidden items-center gap-2 text-muted-foreground sm:flex", variant === "lab" && "text-paper/55")}>
+            <ServiceHealthIndicator />
           </span>
           <button
             type="button"

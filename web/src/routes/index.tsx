@@ -6,6 +6,8 @@ import { UploadDropzone } from "@/components/UploadDropzone";
 import { Button } from "@/components/ui/button";
 import { startQuickUpload } from "@/lib/quick-flow";
 import { createAndProbeManualRun } from "@/lib/api";
+import { ServiceHealthNotice } from "@/components/ServiceHealth";
+import { useHealth } from "@/lib/hooks";
 
 export const Route = createFileRoute("/")({ component: Landing });
 
@@ -21,6 +23,9 @@ function Landing() {
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const health = useHealth();
+  const serviceUnavailable = health.isError || health.data?.status === "unavailable";
+  const generationUnavailable = serviceUnavailable || health.isPending || health.data?.providersConfigured === false;
 
   async function generate() {
     if (!file) return;
@@ -47,6 +52,9 @@ function Landing() {
     <div className="min-h-[100dvh] bg-background text-foreground">
       <AppHeader variant="landing" />
       <main>
+        <div className="mx-auto max-w-[1440px] px-6 pt-4 lg:px-10">
+          <ServiceHealthNotice />
+        </div>
         <section className="relative overflow-hidden signal-glow">
           <div className="pointer-events-none absolute inset-0 signal-grid opacity-80" />
           <div className="relative mx-auto grid max-w-[1440px] gap-12 px-6 pb-20 pt-14 lg:grid-cols-[1.05fr_0.95fr] lg:items-end lg:px-10 lg:pb-28 lg:pt-20">
@@ -65,12 +73,12 @@ function Landing() {
             </div>
 
             <div className="glass-panel rounded-2xl p-2 lg:translate-y-2">
-              <UploadDropzone onFile={setFile} />
+              <UploadDropzone onFile={setFile} disabled={Boolean(serviceUnavailable)} />
               <div className="flex flex-wrap gap-3 px-4 pb-4 pt-4 sm:px-6">
-                <Button size="lg" className="min-h-11 gap-2 rounded-lg px-5" onClick={generate} disabled={!file || busy}>
+                <Button size="lg" className="min-h-11 gap-2 rounded-lg px-5" onClick={generate} disabled={!file || busy || generationUnavailable} title={generationUnavailable ? "Gemma generation is not configured or the service is unavailable." : undefined}>
                   {busy ? "Starting run" : "Generate captions"} <ArrowRight className="h-4 w-4" />
                 </Button>
-                <Button size="lg" variant="outline" className="min-h-11 gap-2 rounded-lg border-white/15 px-5" onClick={openLab} disabled={!file || busy}>
+                <Button size="lg" variant="outline" className="min-h-11 gap-2 rounded-lg border-white/15 px-5" onClick={openLab} disabled={!file || busy || Boolean(serviceUnavailable)}>
                   Open in Gemma Lab
                 </Button>
               </div>

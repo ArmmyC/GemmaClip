@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from gemmaclip.web.services import WebConfigurationError, WebPipelineError, WebServices
 from gemmaclip.web.storage import RunStorage
+from gemmaclip.web.observability import log_event
 
 
 class JobAlreadyRunning(RuntimeError):
@@ -64,6 +65,10 @@ class JobManager:
         with self._lock:
             return set(self._active)
 
+    def health_available(self) -> bool:
+        with self._lock:
+            return not self._closed
+
     @contextmanager
     def mutation(self, run_id: str):
         """Serialize synchronous run mutations with asynchronous jobs."""
@@ -99,8 +104,10 @@ class JobManager:
                 self.services.generate_run_captions(run_id, config or {})
         except (WebConfigurationError, WebPipelineError) as exc:
             self.storage.update_run(run_id, lambda run: _mark_failed(run, job_type, str(exc)))
+            log_event("stage_failed", run_id=run_id, mode="quick" if job_type == "quick_caption" else "manual", stage=job_type, status="error", error_category=type(exc).__name__, secrets=getattr(self.services, "env", None))
         except Exception:
             self.storage.update_run(run_id, lambda run: _mark_failed(run, job_type, "The processing stage failed safely. Please retry."))
+            log_event("stage_failed", run_id=run_id, mode="quick" if job_type == "quick_caption" else "manual", stage=job_type, status="error", error_category="internal_error", secrets=getattr(self.services, "env", None))
         finally:
             with self._lock:
                 self._active.discard(run_id)

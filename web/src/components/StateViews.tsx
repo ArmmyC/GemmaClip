@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 import { CircleDashed, AlertTriangle } from "lucide-react";
+import type { StageId } from "@/lib/types";
 
 export function ProcessingState({ description = "GemmaClip is still preparing this stage. It will update automatically." }: { description?: ReactNode }) {
   return (
@@ -94,4 +95,28 @@ export function StaleStageNotice({
   message?: string;
 }) {
   return <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-warning" role="status">{message}</div>;
+}
+
+const DEPENDENTS: Record<Extract<StageId, "frames" | "audio" | "evidence" | "captions">, StageId[]> = {
+  frames: ["evidence", "captions", "compare"],
+  audio: ["evidence", "captions", "compare"],
+  evidence: ["captions", "compare"],
+  captions: ["compare"],
+};
+
+const LABELS: Record<StageId, string> = {
+  video: "Video",
+  frames: "Frames",
+  audio: "Audio",
+  evidence: "Evidence",
+  captions: "Captions",
+  compare: "Compare",
+};
+
+export function InvalidationPreview({ stage }: { stage: Extract<StageId, "frames" | "audio" | "evidence" | "captions"> }) {
+  return (
+    <div className="rounded-lg border border-warning/25 bg-warning/[0.04] px-3 py-2 text-sm text-warning" role="status">
+      Running {LABELS[stage]} will refresh: {DEPENDENTS[stage].map((item) => LABELS[item]).join(", ")}.
+    </div>
+  );
 }

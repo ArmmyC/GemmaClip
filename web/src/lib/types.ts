@@ -255,6 +255,18 @@ export interface RunStatusResponse {
   degraded: boolean;
 }
 
+export type HealthServiceState = "available" | "unavailable";
+export type HealthStatus = "ok" | "degraded" | "unavailable";
+
+export interface HealthResponse {
+  status: HealthStatus;
+  storage: HealthServiceState;
+  mediaTools: { ffmpeg: HealthServiceState; ffprobe: HealthServiceState };
+  providersConfigured: boolean;
+  jobManager: HealthServiceState;
+  version: string;
+}
+
 export interface ProgressEvent {
   stage: StageId;
   message: string;

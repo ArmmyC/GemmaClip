@@ -70,3 +70,37 @@ jobs:
 
       - name: Audit dependencies
         run: npm audit --audit-level=high
+
+  web-container:
+    name: Web container smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build production web image
+        run: docker build -f Dockerfile.web -t gemmaclip-web:test .
+
+      - name: Start production web image without credentials
+        run: |
+          docker run -d --name gemmaclip-web-test -p 8000:8000 \
+            -e GEMMACLIP_WEB_RUNS_DIR=/tmp/gemmaclip-runs \
+            gemmaclip-web:test
+
+      - name: Smoke-test API and direct SPA routes
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:8000/api/health >/tmp/health.json; then break; fi
+            sleep 1
+          done
+          test "$(python -c 'import json; print(json.load(open("/tmp/health.json"))["status"])')" = degraded
+          curl --silent --fail http://127.0.0.1:8000/ | grep -q 'id="root"'
+          curl --silent --fail http://127.0.0.1:8000/lab | grep -q 'id="root"'
+          curl --silent --fail http://127.0.0.1:8000/api/docs | grep -q 'Swagger UI'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8000/api/unknown)" = 404
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8000/assets/unknown.js)" = 404
+
+      - name: Stop and remove web container
+        if: always()
+        run: docker rm --force gemmaclip-web-test || true
