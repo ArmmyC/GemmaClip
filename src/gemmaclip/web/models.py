@@ -16,8 +16,18 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(alias_generator=_camel, populate_by_name=True, extra="forbid")
 
 
+class MediaToolsResponse(ApiModel):
+    ffmpeg: Literal["available", "unavailable"]
+    ffprobe: Literal["available", "unavailable"]
+
+
 class HealthResponse(ApiModel):
-    status: Literal["ok"] = "ok"
+    status: Literal["ok", "degraded", "unavailable"]
+    storage: Literal["available", "unavailable"]
+    media_tools: MediaToolsResponse
+    providers_configured: bool
+    job_manager: Literal["available", "unavailable"]
+    version: str = "0.1.0"
 
 
 class ConfigResponse(ApiModel):

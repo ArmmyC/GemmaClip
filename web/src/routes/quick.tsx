@@ -11,6 +11,9 @@ import { GenerationOutcomeNotice } from "@/components/GenerationOutcomeNotice";
 import { api, mediaUrl, waitForRun } from "@/lib/api";
 import { startQuickUpload } from "@/lib/quick-flow";
 import type { Run, RunStatusResponse } from "@/lib/types";
+import { ServiceHealthNotice } from "@/components/ServiceHealth";
+import { useHealth } from "@/lib/hooks";
+import { getHealthActionState } from "@/lib/health";
 
 type Search = { runId?: string };
 export const Route = createFileRoute("/quick")({ validateSearch: (s: Record<string, unknown>): Search => ({ runId: typeof s.runId === "string" ? s.runId : undefined }), component: QuickCaption });
@@ -32,6 +35,8 @@ function QuickCaption() {
   const [status, setStatus] = useState<RunStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const health = useHealth();
+  const { generationUnavailable } = getHealthActionState(health);
 
   useEffect(() => {
     if (!runId) return;
@@ -46,6 +51,10 @@ function QuickCaption() {
   }, [runId]);
 
   async function handleFile(file: File) {
+    if (generationUnavailable) {
+      setError("Gemma generation is not configured. Open Gemma Lab when the service is available, or retry the health check.");
+      return;
+    }
     setUploading(true); setError(null); setRun(null);
     try { await startQuickUpload(file, (id) => navigate({ to: "/quick", search: { runId: id }, replace: true })); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Upload failed."); }
@@ -64,12 +73,13 @@ function QuickCaption() {
     <div className="min-h-[100dvh] bg-background">
       <AppHeader />
       <main className="mx-auto max-w-[1440px] px-6 py-12 lg:px-10 lg:py-16">
+        <ServiceHealthNotice className="mb-8" />
         {!runId && !error && (
           <section className="mx-auto max-w-2xl text-center">
             <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">Quick Caption</div>
             <h1 className="mt-4 font-display text-5xl font-semibold tracking-[-0.055em] sm:text-7xl">One video in.<br /><span className="text-muted-foreground">Grounded captions out.</span></h1>
             <p className="mx-auto mt-5 max-w-lg text-muted-foreground">The Balanced pipeline handles frames, useful audio, evidence, and four caption styles for you.</p>
-            <UploadDropzone className="mt-10 text-left" onFile={handleFile} />
+            <UploadDropzone className="mt-10 text-left" onFile={handleFile} disabled={Boolean(generationUnavailable)} />
           </section>
         )}
 

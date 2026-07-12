@@ -3,6 +3,17 @@ import { api } from "./api";
 import type { Run } from "./types";
 
 export const runKey = (runId: string) => ["run", runId] as const;
+export const healthKey = ["health"] as const;
+
+export function useHealth() {
+  return useQuery({
+    queryKey: healthKey,
+    queryFn: api.getHealth,
+    retry: false,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
+}
 
 export function useRun(runId: string) {
   return useQuery({

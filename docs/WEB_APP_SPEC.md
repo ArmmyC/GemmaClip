@@ -1,6 +1,6 @@
 # GemmaClip Web App Specification
 
-> Implementation status (July 2026): `web/` and the optional FastAPI backend implement the real Quick Caption vertical slice and an interactive, stage-driven Gemma Lab. Manual Frames, Audio, Evidence, and Captions jobs persist configuration and artifacts; experiments are immutable snapshots compared from stored values. Audio candidates are temporary and cleaned after inspection or evidence generation. See `docs/WEB_DEVELOPMENT.md`.
+> Implementation status (July 2026): `web/` and the optional FastAPI backend implement the real Quick Caption vertical slice and an interactive, stage-driven Gemma Lab. Manual Frames, Audio, Evidence, and Captions jobs persist configuration and artifacts; experiments are immutable snapshots compared from stored values. Audio candidates are temporary and cleaned after inspection or evidence generation. A separate `Dockerfile.web` serves the compiled SPA and FastAPI together, with a truthful `/api/health` endpoint and safe lifecycle logging. See `docs/WEB_DEVELOPMENT.md` and `docs/ARCHITECTURE.md`.
 
 > Hardening note: public runs distinguish model generation, grounded evidence fallback, and deterministic fallback. Only the first two may become ready; grounded fallback is visibly degraded. Interrupted processing is recovered as a safe error on restart, expired inactive runs are cleaned according to `GEMMACLIP_WEB_RUN_TTL_SECONDS`, and active runs cannot be deleted. Caption cards describe grounding availability, not unsupported exact per-caption attribution. This remains a single-process demo architecture, not a public-scale job system.
 
@@ -1169,6 +1169,10 @@ Recommended Docker strategy:
 - preserve the existing leaderboard image behavior,
 - add a separate `web` build target or `Dockerfile.web`,
 - avoid inflating the leaderboard image with unnecessary frontend build tooling.
+
+The release uses `Dockerfile.web`, a multi-stage Node 22 plus Python 3.12 image. FastAPI serves the compiled `index.html` for `/`, `/quick`, `/lab`, and direct run-stage routes; `/assets/*` serves only built frontend assets; `/api/*` never falls through to the SPA. The image installs ffmpeg/ffprobe, runs as an unprivileged user, and stores runs in the mounted `GEMMACLIP_WEB_RUNS_DIR` volume. Runtime secrets are passed through the environment, never Docker build arguments. `docker-compose.web.yml` and the platform-specific production scripts provide the launch path.
+
+`GET /api/health` checks storage writability, ffmpeg, ffprobe, provider credential presence, and job-manager availability without making a provider request. It returns `ok`, `degraded`, or `unavailable` with safe status fields only. Set `GEMMACLIP_LOG_FORMAT=json` to emit allow-listed lifecycle events; captions, evidence, prompts, provider responses, credentials, and private URLs are excluded.
 
 ## 29. Implementation phases
 

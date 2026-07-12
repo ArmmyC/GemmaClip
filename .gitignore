@@ -36,5 +36,7 @@ web/dist/
 web/coverage/
 web/.tanstack/
 web/*.tsbuildinfo
+
+examples/demo-videos/
 web/vite.config.js
 web/vite.config.d.ts

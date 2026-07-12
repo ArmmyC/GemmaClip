@@ -68,6 +68,26 @@ export GOOGLE_API_KEY="${GOOGLE_API_KEY}"
 python -m gemmaclip.main --input examples/tasks.json --output output/results.json
 ```
 
+## Web demo production image
+
+The web demo uses a separate `Dockerfile.web`; the competition `Dockerfile` remains the Python-only leaderboard image and keeps its 590-second entrypoint. Build and run the web image with runtime secrets:
+
+```bash
+docker build -f Dockerfile.web -t gemmaclip-web .
+docker run --rm \
+  -p 8000:8000 \
+  --env-file .env \
+  -e GEMMACLIP_WEB_HOST=0.0.0.0 \
+  -e GEMMACLIP_WEB_PORT=8000 \
+  -e GEMMACLIP_WEB_RUNS_DIR=/data/runs \
+  -v gemmaclip-runs:/data/runs \
+  gemmaclip-web
+```
+
+If `.env` is omitted, the service still starts for media inspection and reports `degraded` from `GET /api/health`; it does not pretend that a provider is connected. The same workflow is available through `docker compose -f docker-compose.web.yml up --build`, or `scripts/run-web-production.ps1` on PowerShell. The persistent volume stores run artifacts outside the static frontend directory. Configure `GEMMACLIP_LOG_FORMAT=json` for safe JSON lifecycle logs. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md), and [docs/LIVE_SMOKE_TEST.md](docs/LIVE_SMOKE_TEST.md).
+
+Generate small local infrastructure fixtures with `python scripts/create_demo_videos.py`. They are ignored by Git and are not caption-quality claims; the generated tone clip contains no speech.
+
 See [Gemma routing](docs/GEMMA_ROUTING.md) and [Gemma audio](docs/GEMMA_AUDIO.md) for configuration and failure behavior.
 
 Local run:

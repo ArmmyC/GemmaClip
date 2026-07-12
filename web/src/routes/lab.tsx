@@ -6,6 +6,9 @@ import { UploadDropzone } from "@/components/UploadDropzone";
 import { Button } from "@/components/ui/button";
 import { createAndProbeManualRun } from "@/lib/api";
 import { startQuickUpload } from "@/lib/quick-flow";
+import { ServiceHealthNotice } from "@/components/ServiceHealth";
+import { useHealth } from "@/lib/hooks";
+import { getHealthActionState } from "@/lib/health";
 
 export const Route = createFileRoute("/lab")({ component: LabEntry });
 
@@ -14,6 +17,8 @@ function LabEntry() {
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const health = useHealth();
+  const { serviceUnavailable, generationUnavailable } = getHealthActionState(health);
 
   async function openLab() {
     if (!file) { setError("Choose a video first."); return; }
@@ -48,12 +53,13 @@ function LabEntry() {
           <div className="mt-8 flex flex-wrap gap-x-5 gap-y-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground"><span>Frames</span><span>Audio</span><span>Evidence</span><span>Captions</span></div>
         </section>
         <section className="glass-panel relative rounded-2xl p-2 md:p-3" aria-label="Create Gemma Lab run">
+          <ServiceHealthNotice className="mb-2 rounded-xl" />
           <UploadDropzone onFile={setFile} />
           <div className="mt-4 flex flex-wrap gap-3">
-            <Button className="min-h-11 gap-2 rounded-lg px-6" size="lg" onClick={openLab} disabled={busy || !file}>
+            <Button className="min-h-11 gap-2 rounded-lg px-6" size="lg" onClick={openLab} disabled={busy || !file || Boolean(serviceUnavailable)}>
               {busy ? "Opening Lab" : "Open manual Lab"} <ArrowRight className="h-4 w-4" />
             </Button>
-            <Button variant="outline" className="min-h-11 gap-2 rounded-lg px-6" size="lg" onClick={runAutomatically} disabled={busy || !file}>
+            <Button variant="outline" className="min-h-11 gap-2 rounded-lg px-6" size="lg" onClick={runAutomatically} disabled={busy || !file || generationUnavailable}>
               Run automatically
             </Button>
           </div>

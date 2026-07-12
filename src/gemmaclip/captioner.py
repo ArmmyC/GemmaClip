@@ -999,15 +999,11 @@ def build_bounded_evidence_captions(
     """Keep deterministic evidence fallback captions inside the requested bounds."""
     if min_words < 1 or max_words < min_words:
         raise ValueError("Caption word bounds are invalid.")
-    base = build_evidence_based_captions(styles, evidence)
     subject = _evidence_subject_phrase(evidence).capitalize()
     action = _evidence_action_phrase(evidence)
     setting = _evidence_setting_phrase(evidence)
-    grounded_candidates = [
-        f"{subject} {action} in {setting}.",
-        f"The scene shows {subject.lower()} {action}.",
-        f"{subject} {action}.",
-    ]
+    core = f"{subject} {action} in {setting}."
+    grounded_candidates = [core, f"The scene shows {subject.lower()} {action}.", f"{subject} {action}."]
     clauses = (
         "The scene remains visible.",
         "The setting remains clear.",
@@ -1019,29 +1015,49 @@ def build_bounded_evidence_captions(
         "The observed activity remains clear.",
         "The surrounding details remain observable.",
         "The visible action remains easy to describe.",
+        "The visible details remain easy to describe.",
     )
+
+    core_without_period = core[:-1] if core.endswith(".") else core
+    style_candidates = {
+        "formal": grounded_candidates,
+        "sarcastic": [
+            f"{core_without_period}, with no need for extra ceremony.",
+            f"{core_without_period}, delivering the precise amount of drama this moment needs.",
+        ],
+        "humorous_tech": [
+            f"{core_without_period}, like a calm process completing one routine update.",
+            f"{core_without_period}, like a tidy system finishing one small task.",
+        ],
+        "humorous_non_tech": [
+            f"{core_without_period}, like a cup of tea settling on a table.",
+            f"{core_without_period}, like a neighbor taking the usual route home.",
+        ],
+    }
 
     def word_count(value: str) -> int:
         return len(value.split())
 
-    def bounded_sentence(style: str, original: str) -> str:
-        if min_words <= word_count(original) <= max_words:
-            return original
-        candidates = [*grounded_candidates]
+    def bounded_sentence(style: str) -> str:
+        candidates = [*style_candidates.get(style, grounded_candidates)]
         for count in range(1, len(clauses) + 1):
             candidates.extend(
                 " ".join((candidate, *extra))
-                for candidate in grounded_candidates
+                for candidate in style_candidates.get(style, grounded_candidates)
                 for extra in combinations(clauses, count)
             )
         valid = [candidate for candidate in candidates if min_words <= word_count(candidate) <= max_words]
+        # A tight range may not leave room for a style hook. Preserve a complete,
+        # neutral, grounded sentence instead of stretching a joke into an unsafe claim.
+        if not valid and style != "formal":
+            return bounded_sentence("formal")
         if not valid:
             raise ValueError(f"Evidence fallback cannot produce a complete {min_words}-{max_words} word caption for {style}.")
         return max(valid, key=word_count)
 
     bounded: dict[str, str] = {}
-    for style, caption in base.items():
-        bounded[style] = bounded_sentence(style, caption)
+    for style in styles:
+        bounded[style] = bounded_sentence(style)
     return bounded
 
 

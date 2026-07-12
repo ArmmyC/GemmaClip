@@ -1,0 +1,20 @@
+services:
+  gemmaclip-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "${GEMMACLIP_WEB_PORT:-8000}:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      GEMMACLIP_WEB_HOST: 0.0.0.0
+      GEMMACLIP_WEB_PORT: 8000
+      GEMMACLIP_WEB_RUNS_DIR: /data/runs
+    volumes:
+      - gemmaclip-runs:/data/runs
+    init: true
+
+volumes:
+  gemmaclip-runs:

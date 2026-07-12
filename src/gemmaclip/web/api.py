@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response, UploadFile, status
@@ -24,6 +25,7 @@ from gemmaclip.web.models import (
 )
 from gemmaclip.web.services import DEFAULT_STYLES, WebConfigurationError, WebServices
 from gemmaclip.web.storage import RunStorage
+from gemmaclip.web.observability import log_event
 
 
 UPLOAD_CHUNK_SIZE = 1024 * 1024
@@ -33,8 +35,14 @@ def create_api_router() -> APIRouter:
     router = APIRouter(prefix="/api")
 
     @router.get("/health", response_model=HealthResponse)
-    def health() -> HealthResponse:
-        return HealthResponse()
+    def health(request: Request, response: Response) -> HealthResponse:
+        from gemmaclip.web.app import build_health_response
+
+        storage, services, jobs = _dependencies(request)
+        result = build_health_response(storage, services, jobs)
+        if result.status == "unavailable":
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return result
 
     @router.get("/config", response_model=ConfigResponse)
     def config(request: Request) -> ConfigResponse:
@@ -73,7 +81,9 @@ def create_api_router() -> APIRouter:
             if total <= 0:
                 raise HTTPException(status_code=400, detail="The uploaded video is empty.")
             part_path.replace(destination)
-            return storage.update_run(run_id, lambda payload: _store_upload_size(payload, total))
+            result = storage.update_run(run_id, lambda payload: _store_upload_size(payload, total))
+            log_event("run_created", run_id=run_id, mode="manual", stage="video", status="pending", artifact_count=1, secrets=storage_env(request))
+            return result
         except Exception:
             part_path.unlink(missing_ok=True)
             try:
@@ -97,6 +107,7 @@ def create_api_router() -> APIRouter:
                 storage.delete_run(run_id)
         except JobAlreadyRunning as exc:
             raise HTTPException(status_code=409, detail="This run is currently processing and cannot be deleted.") from exc
+        log_event("run_deleted", run_id=run_id, status="deleted", secrets=storage_env(request))
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @router.post("/runs/{run_id}/metadata", response_model=RunResponse)
@@ -228,6 +239,10 @@ def _get_public_run(request: Request, run_id: str) -> dict[str, Any]:
 
 def _dependencies(request: Request) -> tuple[RunStorage, WebServices, JobManager]:
     return request.app.state.storage, request.app.state.services, request.app.state.jobs
+
+
+def storage_env(request: Request) -> Mapping[str, str]:
+    return request.app.state.services.env
 
 
 def _store_upload_size(run: dict[str, Any], total: int) -> None:

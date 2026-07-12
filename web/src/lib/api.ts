@@ -5,6 +5,7 @@ import type {
   EvidenceRequest,
   FrameRequest,
   FrameSelectionRequest,
+  HealthResponse,
   ProcessingPreset,
   Run,
   RunStatusResponse,
@@ -42,6 +43,7 @@ export interface ExperimentComparison {
 }
 
 export const api = {
+  getHealth: () => request<HealthResponse>("/api/health"),
   async createRun(file: File): Promise<Run> { const body = new FormData(); body.append("video", file); return request("/api/runs", { method: "POST", body }); },
   getRun: (id: string) => request<Run>(`/api/runs/${encodeURIComponent(id)}`),
   deleteRun: (id: string) => request<void>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
