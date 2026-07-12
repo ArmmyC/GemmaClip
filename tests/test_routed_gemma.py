@@ -128,6 +128,22 @@ def test_final_prompt_has_exact_keys_frames_evidence_and_audio_gate(tmp_path):
     assert "scores" not in prompt
 
 
+def test_custom_word_bounds_are_consistent_in_system_and_user_prompts(tmp_path):
+    messages = build_final_caption_messages(
+        Task("v1", "video", ("formal",)),
+        _frames(tmp_path),
+        empty_evidence(),
+        google=True,
+        min_words=8,
+        max_words=16,
+    )
+    system = messages[0]["content"]
+    user = messages[1]["content"][-1]["text"]
+    assert "8 to 16 words" in system
+    assert "18 to 35 words" not in system
+    assert "8-16" in user
+
+
 def test_prompts_use_dynamic_frame_count(tmp_path):
     source = _frames(tmp_path)[0]
     frames = [ExtractedFrame(source.path, float(index)) for index in range(12)]

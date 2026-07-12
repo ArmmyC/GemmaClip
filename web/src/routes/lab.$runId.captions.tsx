@@ -111,10 +111,10 @@ function CaptionsStage() {
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Min words" hint={<span className="font-mono">{minW}</span>}>
-              <Slider value={[minW]} onValueChange={([v]) => setMinW(Math.min(v, maxW))} min={1} max={120} step={1} />
+              <Slider value={[minW]} onValueChange={([v]) => setMinW(Math.min(v, maxW))} min={8} max={40} step={1} />
             </Field>
             <Field label="Max words" hint={<span className="font-mono">{maxW}</span>}>
-              <Slider value={[maxW]} onValueChange={([v]) => setMaxW(Math.max(v, minW))} min={1} max={120} step={1} />
+              <Slider value={[maxW]} onValueChange={([v]) => setMaxW(Math.max(v, minW))} min={8} max={40} step={1} />
             </Field>
           </div>
           <Field label="Audio evidence">

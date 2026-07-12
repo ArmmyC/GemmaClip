@@ -420,7 +420,7 @@ def build_final_caption_messages(
 ) -> list[dict[str, Any]]:
     content = [_image_part(frame.path, google=google) for frame in frames]
     content.append({"type": "text", "text": build_final_caption_prompt(task, frames, evidence, min_words=min_words, max_words=max_words, audio_evidence_mode=audio_evidence_mode)})
-    return [{"role": "system", "content": final_caption_system_prompt(frame_count=len(frames))}, {"role": "user", "content": content}]
+    return [{"role": "system", "content": final_caption_system_prompt(frame_count=len(frames), min_words=min_words, max_words=max_words)}, {"role": "user", "content": content}]
 
 
 def build_focused_repair_messages(
@@ -444,7 +444,7 @@ def build_focused_repair_messages(
         f"Each caption must contain {min_words}-{max_words} words. Audio policy: {audio_evidence_mode}. "
         f"Return only this exact JSON shape: {json.dumps(schema)}"
     )})
-    return [{"role": "system", "content": final_caption_system_prompt(frame_count=len(frames))}, {"role": "user", "content": content}]
+    return [{"role": "system", "content": final_caption_system_prompt(frame_count=len(frames), min_words=min_words, max_words=max_words)}, {"role": "user", "content": content}]
 
 
 def build_evidence_prompt(task_id: str, frames: Sequence[ExtractedFrame], audio: AudioEvidenceCandidate, decision: RouteDecision) -> str:
@@ -461,11 +461,15 @@ def build_evidence_prompt(task_id: str, frames: Sequence[ExtractedFrame], audio:
     )
 
 
-def final_caption_system_prompt(*, frame_count: int = 6) -> str:
+def final_caption_system_prompt(*, frame_count: int = 6, min_words: int = 18, max_words: int = 35) -> str:
     from gemmaclip.prompts import build_fireworks_judge_generation_system_prompt
     humor_prompt = build_fireworks_judge_generation_system_prompt().replace(
         "Use only the six separate chronological frames provided.",
         f"Use only the {frame_count} separate chronological frames and structured evidence provided.",
+    )
+    humor_prompt = humor_prompt.replace(
+        "Each caption must be 18 to 35 words",
+        f"Each caption must be {min_words} to {max_words} words",
     )
     return humor_prompt + (
         "\n\nAudio evidence rule: use an audio fact only when audio.status is usable, it is listed in "

@@ -70,8 +70,8 @@ class EvidenceRequest(ApiModel):
 
 class CaptionRequest(ApiModel):
     temperature: float = Field(default=0.4, ge=0, le=2)
-    min_words: int = Field(default=18, ge=1, le=120)
-    max_words: int = Field(default=35, ge=1, le=120)
+    min_words: int = Field(default=18, ge=8, le=40)
+    max_words: int = Field(default=35, ge=8, le=40)
     strict_grounding: bool = True
     audio_evidence_mode: Literal["ignore", "use-if-present", "require"] = "use-if-present"
     focused_repair: bool = True

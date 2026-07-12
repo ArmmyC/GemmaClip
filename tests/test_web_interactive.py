@@ -356,6 +356,15 @@ def test_deterministic_caption_fallback_respects_word_bounds():
         max_words=10,
     )
     assert all(8 <= len(caption.split()) <= 10 for caption in captions.values())
+    assert all(caption.endswith(".") and "frame" not in caption.lower() for caption in captions.values())
+    long_caption = build_bounded_evidence_captions(
+        ("formal",),
+        {"main_subjects": ["a person"], "actions": ["walking"], "setting": "a room"},
+        min_words=40,
+        max_words=40,
+    )["formal"]
+    assert len(long_caption.split()) == 40
+    assert long_caption.endswith(".") and "frame" not in long_caption.lower()
 
 
 def test_routed_caption_fallback_respects_selected_word_bounds(tmp_path):

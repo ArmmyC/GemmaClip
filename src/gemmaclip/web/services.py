@@ -670,7 +670,7 @@ def _validate_caption_config(config: Mapping[str, Any]) -> dict[str, Any]:
     if not styles or len(set(styles)) != len(styles) or any(style not in {"formal", "sarcastic", "humorous-tech", "humorous-non-tech"} for style in styles):
         raise WebPipelineError("Choose at least one supported caption style.")
     values = {"model": "gemma-4-31b", "temperature": float(config.get("temperature", 0.4)), "minWords": int(config.get("minWords", 18)), "maxWords": int(config.get("maxWords", 35)), "strictGrounding": bool(config.get("strictGrounding", True)), "audioEvidenceMode": str(config.get("audioEvidenceMode", "use-if-present")), "focusedRepair": bool(config.get("focusedRepair", True)), "styles": styles}
-    if not 0 <= values["temperature"] <= 2 or not 1 <= values["minWords"] <= values["maxWords"] <= 120 or values["audioEvidenceMode"] not in {"ignore", "use-if-present", "require"} or not values["strictGrounding"]:
+    if not 0 <= values["temperature"] <= 2 or not 8 <= values["minWords"] <= values["maxWords"] <= 40 or values["audioEvidenceMode"] not in {"ignore", "use-if-present", "require"} or not values["strictGrounding"]:
         raise WebPipelineError("Caption configuration is outside the supported range.")
     return values
 

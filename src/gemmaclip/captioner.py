@@ -11,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 import tempfile
 from dataclasses import dataclass
+from itertools import combinations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -999,13 +1000,48 @@ def build_bounded_evidence_captions(
     if min_words < 1 or max_words < min_words:
         raise ValueError("Caption word bounds are invalid.")
     base = build_evidence_based_captions(styles, evidence)
-    padding = "The sampled frames provide only visible context."
+    subject = _evidence_subject_phrase(evidence).capitalize()
+    action = _evidence_action_phrase(evidence)
+    setting = _evidence_setting_phrase(evidence)
+    grounded_candidates = [
+        f"{subject} {action} in {setting}.",
+        f"The scene shows {subject.lower()} {action}.",
+        f"{subject} {action}.",
+    ]
+    clauses = (
+        "The scene remains visible.",
+        "The setting remains clear.",
+        "The action stays observable.",
+        "The subject stays in view.",
+        "The surrounding space remains visible.",
+        "The moment remains visually consistent.",
+        "The visible setting stays identifiable.",
+        "The observed activity remains clear.",
+        "The surrounding details remain observable.",
+        "The visible action remains easy to describe.",
+    )
+
+    def word_count(value: str) -> int:
+        return len(value.split())
+
+    def bounded_sentence(style: str, original: str) -> str:
+        if min_words <= word_count(original) <= max_words:
+            return original
+        candidates = [*grounded_candidates]
+        for count in range(1, len(clauses) + 1):
+            candidates.extend(
+                " ".join((candidate, *extra))
+                for candidate in grounded_candidates
+                for extra in combinations(clauses, count)
+            )
+        valid = [candidate for candidate in candidates if min_words <= word_count(candidate) <= max_words]
+        if not valid:
+            raise ValueError(f"Evidence fallback cannot produce a complete {min_words}-{max_words} word caption for {style}.")
+        return max(valid, key=word_count)
+
     bounded: dict[str, str] = {}
     for style, caption in base.items():
-        words = caption.split()
-        while len(words) < min_words:
-            words.extend(padding.split())
-        bounded[style] = " ".join(words[:max_words]).strip()
+        bounded[style] = bounded_sentence(style, caption)
     return bounded
 
 
@@ -1143,7 +1179,7 @@ def _evidence_object_phrase(evidence: Mapping[str, Any]) -> str:
 
 def _list_phrase(value: Any, *, fallback: str) -> str:
     if isinstance(value, list):
-        cleaned = [str(item).strip() for item in value if str(item).strip()]
+        cleaned = [str(item).strip() for item in value if item is not None and str(item).strip() and str(item).strip().lower() != "none"]
         if not cleaned:
             return fallback
         if len(cleaned) == 1:
@@ -1151,7 +1187,9 @@ def _list_phrase(value: Any, *, fallback: str) -> str:
         if len(cleaned) == 2:
             return f"{cleaned[0]} and {cleaned[1]}"
         return f"{', '.join(cleaned[:-1])}, and {cleaned[-1]}"
-    cleaned_value = str(value).strip()
+    cleaned_value = "" if value is None else str(value).strip()
+    if cleaned_value.lower() == "none":
+        cleaned_value = ""
     return cleaned_value or fallback
 
 
