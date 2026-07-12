@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="web/public/favicon.ico" alt="GemmaClip icon" width="64" />
-</p>
-
 <h1 align="center">GemmaClip</h1>
 
 <p align="center">
