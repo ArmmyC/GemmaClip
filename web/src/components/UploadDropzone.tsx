@@ -26,10 +26,11 @@ export function UploadDropzone({ onFile, compact, className, disabled = false }:
       onDragLeave={() => setHover(false)}
       onDrop={(event) => { if (disabled) return; event.preventDefault(); setHover(false); handleFiles(event.dataTransfer.files); }}
       className={cn(
-        "group relative block overflow-hidden rounded-xl border border-white/10 bg-card/80 text-center transition-[border-color,background-color] duration-200",
+        "group relative flex min-h-full items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-card/80 text-center transition-[border-color,background-color] duration-200",
         !disabled && "cursor-pointer",
         disabled && "cursor-not-allowed opacity-60",
-        "hover:border-white/20 hover:bg-card",
+        !disabled && "hover:border-white/20 hover:bg-card",
+        "focus-within:ring-1 focus-within:ring-ember focus-within:ring-offset-2 focus-within:ring-offset-background",
         hover && "border-ember bg-ember-soft/20",
         compact ? "p-6" : "p-8 sm:p-12",
         className,
@@ -37,13 +38,14 @@ export function UploadDropzone({ onFile, compact, className, disabled = false }:
     >
       <input ref={inputRef} disabled={disabled} type="file" accept="video/mp4,video/webm,video/quicktime" className="sr-only" onChange={(event) => handleFiles(event.target.files)} />
       <div className="pointer-events-none absolute inset-0 signal-grid opacity-70" />
+
       <div className="relative flex flex-col items-center gap-4">
         <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-white/10 bg-background text-ember">
           {selected ? <Film className="h-5 w-5" /> : <UploadCloud className="h-5 w-5 transition group-hover:-translate-y-0.5" />}
         </div>
         {selected ? (
           <div>
-            <div className="font-mono text-sm text-foreground">{selected.name}</div>
+            <div className="mx-auto max-w-[min(100%,28rem)] truncate font-mono text-sm text-foreground" title={selected.name}>{selected.name}</div>
             <div className="mt-2 flex items-center justify-center font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
               <span>{(selected.size / 1_000_000).toFixed(1)} MB</span>
               <span className="mx-2 text-muted-foreground/50">/</span>
@@ -58,6 +60,7 @@ export function UploadDropzone({ onFile, compact, className, disabled = false }:
           </div>
         )}
       </div>
+
     </label>
   );
 }

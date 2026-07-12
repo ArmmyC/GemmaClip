@@ -9,11 +9,7 @@ import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/StateViews";
 import { GenerationOutcomeNotice } from "@/components/GenerationOutcomeNotice";
 import { api, mediaUrl, waitForRun } from "@/lib/api";
-import { startQuickUpload } from "@/lib/quick-flow";
 import type { Run, RunStatusResponse } from "@/lib/types";
-import { ServiceHealthNotice } from "@/components/ServiceHealth";
-import { useHealth } from "@/lib/hooks";
-import { getHealthActionState } from "@/lib/health";
 
 type Search = { runId?: string };
 export const Route = createFileRoute("/quick")({ validateSearch: (s: Record<string, unknown>): Search => ({ runId: typeof s.runId === "string" ? s.runId : undefined }), component: QuickCaption });
@@ -34,12 +30,12 @@ function QuickCaption() {
   const [run, setRun] = useState<Run | null>(null);
   const [status, setStatus] = useState<RunStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const health = useHealth();
-  const { generationUnavailable } = getHealthActionState(health);
 
   useEffect(() => {
-    if (!runId) return;
+    if (!runId) {
+      void navigate({ to: "/", replace: true });
+      return;
+    }
     const controller = new AbortController();
     setError(null);
     api.getRun(runId).then((current) => {
@@ -48,18 +44,7 @@ function QuickCaption() {
       return waitForRun(runId, { signal: controller.signal, onStatus: setStatus }).then(setRun);
     }).catch((cause: Error) => { if (cause.name !== "AbortError") setError(cause.message); });
     return () => controller.abort();
-  }, [runId]);
-
-  async function handleFile(file: File) {
-    if (generationUnavailable) {
-      setError("Gemma generation is not configured. Open Gemma Lab when the service is available, or retry the health check.");
-      return;
-    }
-    setUploading(true); setError(null); setRun(null);
-    try { await startQuickUpload(file, (id) => navigate({ to: "/quick", search: { runId: id }, replace: true })); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Upload failed."); }
-    finally { setUploading(false); }
-  }
+  }, [runId, navigate]);
 
   function download() {
     if (!run) return;
@@ -68,23 +53,12 @@ function QuickCaption() {
   }
 
   const activeStep = status?.activeStage ? STATUS_STEP[status.activeStage] : status?.progressMessage && STEPS.includes(status.progressMessage) ? status.progressMessage : "Preparing video";
+  if (!runId) return null;
 
   return (
     <div className="min-h-[100dvh] bg-background">
       <AppHeader />
       <main className="mx-auto max-w-[1440px] px-6 py-12 lg:px-10 lg:py-16">
-        <ServiceHealthNotice className="mb-8" />
-        {!runId && !error && (
-          <section className="mx-auto max-w-2xl text-center">
-            <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">Quick Caption</div>
-            <h1 className="mt-4 font-display text-5xl font-semibold tracking-[-0.055em] sm:text-7xl">One video in.<br /><span className="text-muted-foreground">Grounded captions out.</span></h1>
-            <p className="mx-auto mt-5 max-w-lg text-muted-foreground">The Balanced pipeline handles frames, useful audio, evidence, and four caption styles for you.</p>
-            <UploadDropzone className="mt-10 text-left" onFile={handleFile} disabled={Boolean(generationUnavailable)} />
-          </section>
-        )}
-
-        {uploading && <p className="mx-auto mt-5 max-w-2xl font-mono text-xs uppercase tracking-[0.16em] text-muted-foreground" role="status">Uploading video securely</p>}
-
         {runId && !run && !error && (
           <section className="grid gap-6 lg:grid-cols-[0.8fr_1.2fr] lg:items-start">
             <div className="glass-panel rounded-xl p-6">
@@ -97,7 +71,7 @@ function QuickCaption() {
         )}
 
         {error && (
-          <ErrorState title="Could not create captions" description={error} action={<Button variant="outline" onClick={() => navigate({ to: "/quick", search: {}, replace: true })}>Choose another video</Button>} />
+          <ErrorState title="Could not create captions" description={error} action={<Button variant="outline" onClick={() => navigate({ to: "/", replace: true })}>Choose another video</Button>} />
         )}
 
         {run && (
@@ -108,7 +82,7 @@ function QuickCaption() {
                 <div className="space-y-4 p-5">
                   <div><div className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Run summary</div><div className="mt-2 truncate font-mono text-xs">{run.video.filename}</div></div>
                   <div className="grid grid-cols-2 gap-3 border-t border-white/10 pt-4 text-xs"><Summary label="captions" value={String(run.captions.results.length)} /><Summary label="route" value={run.evidence.result.selectedRoute} /><Summary label="provider" value={run.evidence.result.routeProvider} /><Summary label="status" value={run.status} /></div>
-                  <div className="flex flex-wrap gap-2 border-t border-white/10 pt-4"><Button variant="outline" size="sm" className="min-h-11 gap-2" onClick={download}><Download className="h-3.5 w-3.5" /> Download JSON</Button><Button variant="ghost" size="sm" className="min-h-11 gap-2" onClick={() => navigate({ to: "/quick", search: {}, replace: true })}><RefreshCw className="h-3.5 w-3.5" /> Start another</Button></div>
+                  <div className="flex flex-wrap gap-2 border-t border-white/10 pt-4"><Button variant="outline" size="sm" className="min-h-11 gap-2" onClick={download}><Download className="h-3.5 w-3.5" /> Download JSON</Button><Button variant="ghost" size="sm" className="min-h-11 gap-2" onClick={() => navigate({ to: "/", replace: true })}><RefreshCw className="h-3.5 w-3.5" /> Start another</Button></div>
                 </div>
               </div>
             </aside>
