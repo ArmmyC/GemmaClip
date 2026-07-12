@@ -12,6 +12,7 @@ services:
       GEMMACLIP_WEB_HOST: 0.0.0.0
       GEMMACLIP_WEB_PORT: 8000
       GEMMACLIP_WEB_RUNS_DIR: /data/runs
+    restart: unless-stopped
     volumes:
       - gemmaclip-runs:/data/runs
     init: true
