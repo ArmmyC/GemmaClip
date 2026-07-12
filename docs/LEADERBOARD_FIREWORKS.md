@@ -61,8 +61,12 @@ Qwen generation
   -> MiniMax generation fallback when the first attempt is retryable or invalid
   -> focused repair with Qwen, then MiniMax only for styles still missing
   -> MiniMax independent visual review
-  -> Qwen review fallback if review is retryable and time remains
+  -> Qwen review fallback if review is fallback-eligible and time remains
 ```
+
+A model-not-found response (`404`) advances once to the configured fallback
+model even though it is not retried on the same model. Authentication or
+permission failures (`401`/`403`) stop model fallback for that operation.
 
 Valid captions are retained byte-for-byte during focused repair. A failed
 review never discards valid generation output. The competition output remains

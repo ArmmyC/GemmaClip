@@ -60,11 +60,11 @@ def generate_fireworks_leaderboard_captions(
     client = client_factory(active_config) if client_factory is not None else FireworksLeaderboardClient(active_config)
     debug_events: list[dict[str, Any]] = []
     valid_captions: dict[str, str] = {}
-    initial_retryable = False
+    initial_fallback_eligible = False
     initial_safe_to_repair = True
 
     for index, model in enumerate(active_config.model_order):
-        if index > 0 and not initial_retryable:
+        if index > 0 and not initial_fallback_eligible:
             break
         if not _has_time(live_remaining, active_config.min_generation_remaining_seconds):
             initial_safe_to_repair = False
@@ -84,23 +84,23 @@ def generate_fireworks_leaderboard_captions(
             valid_captions = _merge_missing(valid_captions, result, task.styles)
             if _has_all_styles(valid_captions, task.styles):
                 break
-            initial_retryable = True
+            initial_fallback_eligible = True
         except FireworksLeaderboardRuntimeError:
             initial_safe_to_repair = False
             break
         except FireworksLeaderboardRequestError as exc:
             valid_captions = _merge_missing(valid_captions, exc.partial_captions, task.styles)
-            initial_retryable = exc.retryable
-            initial_safe_to_repair = exc.retryable
-            if not exc.retryable:
+            initial_fallback_eligible = exc.fallback_eligible
+            initial_safe_to_repair = exc.fallback_eligible
+            if not exc.fallback_eligible:
                 break
         except Exception as exc:
             # Test doubles and alternate clients can surface a plain exception;
             # treat it as a retryable network/provider failure without logging it.
             valid_captions = _merge_missing(valid_captions, {}, task.styles)
-            initial_retryable = _looks_retryable(exc)
-            initial_safe_to_repair = initial_retryable
-            if not initial_retryable:
+            initial_fallback_eligible = _looks_retryable(exc)
+            initial_safe_to_repair = initial_fallback_eligible
+            if not initial_fallback_eligible:
                 break
 
     if initial_safe_to_repair:
@@ -209,7 +209,7 @@ def _repair_missing_styles(
         except FireworksLeaderboardRequestError as exc:
             merged = _merge_missing(merged, exc.partial_captions, task.styles)
             outstanding = [style for style in outstanding if style not in merged]
-            if not exc.retryable:
+            if not exc.fallback_eligible:
                 break
         except Exception as exc:
             if not _looks_retryable(exc):
@@ -244,7 +244,7 @@ def _review_captions(
         except FireworksLeaderboardRuntimeError:
             return None
         except FireworksLeaderboardRequestError as exc:
-            if not exc.retryable:
+            if not exc.fallback_eligible:
                 return None
             if index == 1:
                 return None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import json
+import json as json_module
+import logging
 from pathlib import Path
 
 import httpx
@@ -30,6 +31,7 @@ from gemmaclip.leaderboard.validation import (
     validate_caption_payload,
 )
 from gemmaclip.web.services import WebServices
+from gemmaclip.video import VideoMetadata
 
 
 def make_task(styles=("formal", "sarcastic", "humorous_tech", "humorous_non_tech")) -> Task:
@@ -121,7 +123,7 @@ def test_generation_request_has_six_separate_jpegs_timestamps_schema_and_json_mo
     assert client.complete_json(messages, model="model", temperature=0.3, validator=lambda value: value) == {"formal": "ok"}
     assert captured["response_format"] == {"type": "json_object"}
     assert len([part for part in captured["messages"][1]["content"] if part["type"] == "image_url"]) == 6
-    assert "secret-key" not in json.dumps(captured)
+    assert "secret-key" not in json_module.dumps(captured)
 
 
 class ScriptedClient:
@@ -157,6 +159,101 @@ def test_generation_uses_qwen_then_minimax_after_retryable_invalid_primary(tmp_p
         DEFAULT_FIREWORKS_LEADERBOARD_GENERATION_MODEL,
         DEFAULT_FIREWORKS_LEADERBOARD_FALLBACK_MODEL,
     ]
+
+
+class HTTPSequence:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.models: list[str] = []
+
+    def post(self, url, headers, json):
+        self.models.append(json["model"])
+        status, payload = self.responses.pop(0)
+        request = httpx.Request("POST", url, headers=headers, json=json)
+        if status != 200:
+            return httpx.Response(status, request=request, json={"error": "provider failure"})
+        return httpx.Response(
+            status,
+            request=request,
+            json={"choices": [{"message": {"content": json_module.dumps(payload)}}]},
+        )
+
+
+def test_generation_404_uses_configured_fallback_model(tmp_path):
+    captions = valid_captions(("formal", "sarcastic"))
+    http_client = HTTPSequence([(404, None), (200, captions)])
+    config = load_fireworks_leaderboard_config(
+        {
+            "GEMMACLIP_PROVIDER": "fireworks_leaderboard",
+            "FIREWORKS_API_KEY": "key",
+            "FIREWORKS_LEADERBOARD_ENABLE_REVIEW": "false",
+        }
+    )
+    assert config is not None
+    result = generate_fireworks_leaderboard_captions(
+        make_task(("formal", "sarcastic")),
+        make_frames(tmp_path),
+        config=config,
+        client_factory=lambda value: FireworksLeaderboardClient(value, client=http_client),
+        remaining_seconds=149,
+    )
+    assert result == captions
+    assert http_client.models == [
+        DEFAULT_FIREWORKS_LEADERBOARD_GENERATION_MODEL,
+        DEFAULT_FIREWORKS_LEADERBOARD_FALLBACK_MODEL,
+    ]
+
+
+def test_review_404_uses_qwen_review_fallback(tmp_path):
+    captions = valid_captions(("formal", "sarcastic"))
+    reviewed = dict(captions, sarcastic="A person moves a large box indoors while the supposedly simple task turns into a carefully choreographed performance for everyone nearby.")
+    review_payload = {
+        "scores": {
+            style: {"accuracy": 0.9, "style_match": 0.9}
+            for style in captions
+        },
+        "captions": reviewed,
+    }
+    http_client = HTTPSequence([(200, captions), (404, None), (200, review_payload)])
+    config = load_fireworks_leaderboard_config(
+        {"GEMMACLIP_PROVIDER": "fireworks_leaderboard", "FIREWORKS_API_KEY": "key"}
+    )
+    assert config is not None
+    result = generate_fireworks_leaderboard_captions(
+        make_task(("formal", "sarcastic")),
+        make_frames(tmp_path),
+        config=config,
+        client_factory=lambda value: FireworksLeaderboardClient(value, client=http_client),
+        remaining_seconds=300,
+    )
+    assert result == reviewed
+    assert http_client.models == [
+        DEFAULT_FIREWORKS_LEADERBOARD_GENERATION_MODEL,
+        DEFAULT_FIREWORKS_LEADERBOARD_REVIEW_MODEL,
+        DEFAULT_FIREWORKS_LEADERBOARD_GENERATION_MODEL,
+    ]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_authentication_or_permission_failure_does_not_try_fallback_model(tmp_path, status):
+    http_client = HTTPSequence([(status, None)])
+    config = load_fireworks_leaderboard_config(
+        {
+            "GEMMACLIP_PROVIDER": "fireworks_leaderboard",
+            "FIREWORKS_API_KEY": "key",
+            "FIREWORKS_LEADERBOARD_ENABLE_REVIEW": "false",
+        }
+    )
+    assert config is not None
+    result = generate_fireworks_leaderboard_captions(
+        make_task(("formal",)),
+        make_frames(tmp_path),
+        config=config,
+        client_factory=lambda value: FireworksLeaderboardClient(value, client=http_client),
+        remaining_seconds=149,
+    )
+    assert result == build_leaderboard_fallback_captions(("formal",))
+    assert http_client.models == [DEFAULT_FIREWORKS_LEADERBOARD_GENERATION_MODEL]
 
 
 def test_focused_repair_preserves_valid_caption_and_only_requests_missing_style(tmp_path):
@@ -289,3 +386,71 @@ def test_cli_dispatches_new_provider_to_six_frame_extractor_and_new_generator(tm
     assert extraction_options[0]["fireworks_judge"] is True
     assert extraction_options[0]["google_fast"] is False
     assert generator_calls
+
+
+def test_leaderboard_download_failure_uses_strict_fallback(tmp_path, monkeypatch):
+    from gemmaclip.main import process_task
+
+    task = make_task()
+    monkeypatch.setattr(
+        "gemmaclip.main.download_video",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("download failed")),
+    )
+    result, manifest = process_task(task, tmp_path, env={"GEMMACLIP_PROVIDER": "fireworks_leaderboard"})
+    assert manifest is None
+    assert result["captions"] == build_leaderboard_fallback_captions(task.styles)
+    assert all(18 <= caption_word_count(caption) <= 35 for caption in result["captions"].values())
+
+
+def test_leaderboard_metadata_probe_failure_uses_strict_fallback(tmp_path, monkeypatch):
+    from gemmaclip.main import process_task
+
+    task = make_task()
+    monkeypatch.setattr("gemmaclip.main.download_video", lambda *args, **kwargs: tmp_path / "video.mp4")
+    monkeypatch.setattr(
+        "gemmaclip.main.probe_video",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("ffprobe failed")),
+    )
+    result, manifest = process_task(task, tmp_path, env={"GEMMACLIP_PROVIDER": "fireworks_leaderboard"})
+    assert manifest is None
+    assert result["captions"] == build_leaderboard_fallback_captions(task.styles)
+    assert all(18 <= caption_word_count(caption) <= 35 for caption in result["captions"].values())
+
+
+def test_leaderboard_frame_extraction_failure_uses_strict_fallback(tmp_path, monkeypatch):
+    from gemmaclip.main import process_task
+
+    task = make_task()
+    monkeypatch.setattr("gemmaclip.main.download_video", lambda *args, **kwargs: tmp_path / "video.mp4")
+    monkeypatch.setattr(
+        "gemmaclip.main.probe_video",
+        lambda *args, **kwargs: VideoMetadata(5.0, 24.0, 640, 480, 120),
+    )
+    monkeypatch.setattr(
+        "gemmaclip.main.extract_frames",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("frame extraction failed")),
+    )
+    result, manifest = process_task(task, tmp_path, env={"GEMMACLIP_PROVIDER": "fireworks_leaderboard"})
+    assert manifest is None
+    assert result["captions"] == build_leaderboard_fallback_captions(task.styles)
+    assert all(18 <= caption_word_count(caption) <= 35 for caption in result["captions"].values())
+
+
+def test_leaderboard_pre_model_failure_does_not_log_signed_video_url(tmp_path, monkeypatch, caplog):
+    from gemmaclip.main import process_task
+
+    signed_url = "https://example.test/video.mp4?token=super-secret"
+    caplog.set_level(logging.WARNING, logger="gemmaclip")
+    monkeypatch.setattr(
+        "gemmaclip.main.download_video",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(f"download failed for {signed_url}")),
+    )
+    result, _ = process_task(
+        make_task(),
+        tmp_path,
+        env={"GEMMACLIP_PROVIDER": "fireworks_leaderboard"},
+    )
+    assert result["captions"] == build_leaderboard_fallback_captions(make_task().styles)
+    assert signed_url not in caplog.text
+    assert "super-secret" not in caplog.text
+    assert "category=RuntimeError" in caplog.text

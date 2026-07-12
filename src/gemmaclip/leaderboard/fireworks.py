@@ -28,13 +28,18 @@ class FireworksLeaderboardRequestError(RuntimeError):
         self,
         message: str,
         *,
-        retryable: bool,
+        retryable: bool | None = None,
+        fallback_eligible: bool | None = None,
         category: str,
         status_code: int | None = None,
         partial_captions: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
-        self.retryable = retryable
+        # Keep retryable for compatibility, but use fallback_eligible for
+        # model selection. A 404 is not a same-model retry, yet it can safely
+        # try the explicitly configured fallback model once.
+        self.retryable = bool(retryable) if retryable is not None else bool(fallback_eligible)
+        self.fallback_eligible = bool(fallback_eligible) if fallback_eligible is not None else self.retryable
         self.category = category
         self.status_code = status_code
         self.partial_captions = partial_captions or {}
@@ -95,11 +100,13 @@ class FireworksLeaderboardClient:
             )
             status_code = getattr(response, "status_code", None)
             if status_code is not None and status_code >= 400:
-                retryable = _retryable_status(status_code)
+                retryable = _same_model_retryable_status(status_code)
+                fallback_eligible = _fallback_eligible_status(status_code)
                 category = _status_category(status_code)
                 raise FireworksLeaderboardRequestError(
                     "Fireworks request returned an HTTP error",
                     retryable=retryable,
+                    fallback_eligible=fallback_eligible,
                     category=category,
                     status_code=status_code,
                 )
@@ -114,6 +121,7 @@ class FireworksLeaderboardClient:
                 raise FireworksLeaderboardRequestError(
                     "Fireworks response failed local validation",
                     retryable=True,
+                    fallback_eligible=True,
                     category=category,
                     status_code=status_code,
                     partial_captions=partial,
@@ -150,11 +158,12 @@ class FireworksLeaderboardClient:
                 result=None,
             )
             LOGGER.warning(
-                "Fireworks leaderboard operation=%s model=%s status=failed status_code=%s retryable=%s category=%s elapsed_seconds=%.3f",
+                "Fireworks leaderboard operation=%s model=%s status=failed status_code=%s retryable=%s fallback_eligible=%s category=%s elapsed_seconds=%.3f",
                 operation,
                 model,
                 exc.status_code,
                 exc.retryable,
+                exc.fallback_eligible,
                 exc.category,
                 self._clock() - started_at,
             )
@@ -179,6 +188,7 @@ class FireworksLeaderboardClient:
             raise FireworksLeaderboardRequestError(
                 "Fireworks request timed out",
                 retryable=True,
+                fallback_eligible=True,
                 category="timeout",
                 status_code=status_code,
             ) from exc
@@ -202,6 +212,7 @@ class FireworksLeaderboardClient:
             raise FireworksLeaderboardRequestError(
                 "Fireworks request failed due to a network error",
                 retryable=True,
+                fallback_eligible=True,
                 category="network",
                 status_code=status_code,
             ) from exc
@@ -227,6 +238,7 @@ class FireworksLeaderboardClient:
             raise FireworksLeaderboardRequestError(
                 "Fireworks response was empty or invalid",
                 retryable=True,
+                fallback_eligible=True,
                 category=category,
                 status_code=status_code,
             ) from exc
@@ -263,8 +275,16 @@ def _extract_response_text(payload: object) -> str:
     return content
 
 
-def _retryable_status(status_code: int) -> bool:
+def _same_model_retryable_status(status_code: int) -> bool:
     return status_code in {408, 409, 429} or 500 <= status_code <= 599
+
+
+def _fallback_eligible_status(status_code: int) -> bool:
+    if status_code in {401, 403}:
+        return False
+    if status_code == 404:
+        return True
+    return _same_model_retryable_status(status_code)
 
 
 def _status_category(status_code: int) -> str:

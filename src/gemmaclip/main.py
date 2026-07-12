@@ -20,7 +20,7 @@ from gemmaclip.gemma_client import (
 )
 from gemmaclip.io import Task, make_frame_manifest_entry, read_tasks, write_frame_manifest, write_results
 from gemmaclip.leaderboard.config import load_fireworks_leaderboard_config
-from gemmaclip.leaderboard.pipeline import generate_fireworks_leaderboard_captions
+from gemmaclip.leaderboard.pipeline import build_leaderboard_fallback_captions, generate_fireworks_leaderboard_captions
 from gemmaclip.validate import validate_results
 from gemmaclip.video import probe_video
 
@@ -107,6 +107,7 @@ def process_task(
     remaining_seconds: float | None = None,
     remaining_time_fn: Callable[[], float] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    leaderboard_config = None
     try:
         values = env if env is not None else os.environ
         leaderboard_config = load_fireworks_leaderboard_config(values)
@@ -170,8 +171,16 @@ def process_task(
                 video_path=video_path,
             )
     except Exception as exc:
-        LOGGER.warning("Task %s failed, writing fallback captions: %s", task.task_id, exc)
-        captions = build_fallback_captions(task.styles)
+        if leaderboard_config is not None:
+            LOGGER.warning(
+                "Task %s failed before leaderboard completion category=%s",
+                task.task_id,
+                type(exc).__name__,
+            )
+            captions = build_leaderboard_fallback_captions(task.styles)
+        else:
+            LOGGER.warning("Task %s failed, writing fallback captions: %s", task.task_id, exc)
+            captions = build_fallback_captions(task.styles)
         manifest_entry = None
 
     return (
