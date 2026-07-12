@@ -45,3 +45,7 @@ web/vite.config.d.ts
 # Local Codex skill bundles
 .agents/
 .github/skills/
+
+# Keep project Markdown notes local; README.md is the tracked project entrypoint.
+*.md
+!/README.md
