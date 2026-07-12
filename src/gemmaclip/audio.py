@@ -26,6 +26,10 @@ class AudioSettings:
     min_rms: float = DEFAULT_AUDIO_MIN_RMS
     min_remaining_seconds: float = DEFAULT_AUDIO_MIN_REMAINING_SECONDS
     command_timeout_seconds: float = DEFAULT_AUDIO_COMMAND_TIMEOUT_SECONDS
+    # ``first-non-silent`` is kept as a backwards-compatible API spelling for
+    # the MVP's first-N-seconds selector.  It deliberately does not claim that
+    # the window contains speech; RMS is only an energy heuristic.
+    strategy: str = "highest-energy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,9 +116,16 @@ def prepare_audio_candidate(
             ffmpeg_binary=ffmpeg_binary, runner=runner,
         )
         samples, sample_rate = read_pcm16_mono(full_path)
-        start_seconds, duration_seconds, rms = select_highest_energy_window(
-            samples, sample_rate, settings.max_seconds,
-        )
+        if settings.strategy == "first-non-silent":
+            maximum_samples = max(1, int(settings.max_seconds * sample_rate))
+            selected = samples[:maximum_samples]
+            start_seconds = 0.0
+            duration_seconds = len(selected) / sample_rate
+            rms = pcm_rms(selected)
+        else:
+            start_seconds, duration_seconds, rms = select_highest_energy_window(
+                samples, sample_rate, settings.max_seconds,
+            )
         silent = rms < settings.min_rms
         if silent:
             return AudioEvidenceCandidate(None, True, False, True, start_seconds, duration_seconds, sample_rate, rms, "selected audio is effectively silent")
@@ -124,7 +135,8 @@ def prepare_audio_candidate(
             ffmpeg_binary=ffmpeg_binary, runner=runner,
             start_seconds=start_seconds, duration_seconds=duration_seconds,
         )
-        return AudioEvidenceCandidate(selected_path, True, True, False, start_seconds, duration_seconds, sample_rate, rms, "highest-energy window selected")
+        reason = "first window selected" if settings.strategy == "first-non-silent" else "highest-energy window selected"
+        return AudioEvidenceCandidate(selected_path, True, True, False, start_seconds, duration_seconds, sample_rate, rms, reason)
     except (RuntimeError, OSError, ValueError, wave.Error) as exc:
         selected_path.unlink(missing_ok=True)
         return unavailable_audio(settings.sample_rate, f"audio extraction failed: {exc}")

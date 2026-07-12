@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, createAndStartQuickRun, fromBackendStyle, labPath, toBackendStyle, waitForRun } from "./api";
+import { api, ApiError, createAndProbeManualRun, createAndStartQuickRun, fromBackendStyle, labPath, toBackendStyle, waitForRun } from "./api";
 
 const response = (body: unknown, status = 200) => new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
@@ -48,6 +48,27 @@ describe("real API client", () => {
     const remove = vi.spyOn(api, "deleteRun");
     await expect(createAndStartQuickRun(new File(["x"], "clip.mp4"))).resolves.toBe(run);
     expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("probes a manual Lab run without starting Quick Caption", async () => {
+    const run = { id: "run_aaaaaaaaaaaaaaaaaaaa" };
+    vi.spyOn(api, "createRun").mockResolvedValue(run as never);
+    const probe = vi.spyOn(api, "postMetadata").mockResolvedValue(run as never);
+    const quick = vi.spyOn(api, "startQuickCaption");
+    await expect(createAndProbeManualRun(new File(["x"], "clip.mp4"))).resolves.toBe(run);
+    expect(probe).toHaveBeenCalledWith(run.id, "balanced");
+    expect(quick).not.toHaveBeenCalled();
+  });
+
+  it("uses typed stage endpoints and preserves JSON request bodies", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response({ id: "run_aaaaaaaaaaaaaaaaaaaa" })));
+    vi.stubGlobal("fetch", fetchMock);
+    await api.postFrames("run_aaaaaaaaaaaaaaaaaaaa", { method: "hybrid", totalFrames: 6, anchorCount: 4, highChangeCount: 2, minSpacingSec: 1, changeSensitivity: 0.5 });
+    await api.postFrameSelection("run_aaaaaaaaaaaaaaaaaaaa", { includedFrameIds: ["frame_001.jpg", "frame_002.jpg"] });
+    await api.postAudio("run_aaaaaaaaaaaaaaaaaaaa", { mode: "automatic", maxDurationSec: 30, sampleRateHz: 16000, minRmsEnergy: 0.01, strategy: "highest-energy" });
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/frames"), expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/frames/selection"), expect.objectContaining({ method: "PATCH" }));
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/audio"), expect.objectContaining({ method: "POST" }));
   });
 
   it("does not delete when upload fails before a run exists", async () => {

@@ -128,6 +128,32 @@ def test_final_prompt_has_exact_keys_frames_evidence_and_audio_gate(tmp_path):
     assert "scores" not in prompt
 
 
+def test_custom_word_bounds_are_consistent_in_system_and_user_prompts(tmp_path):
+    messages = build_final_caption_messages(
+        Task("v1", "video", ("formal",)),
+        _frames(tmp_path),
+        empty_evidence(),
+        google=True,
+        min_words=8,
+        max_words=16,
+    )
+    system = messages[0]["content"]
+    user = messages[1]["content"][-1]["text"]
+    assert "8 to 16 words" in system
+    assert "18 to 35 words" not in system
+    assert "8-16" in user
+
+
+def test_prompts_use_dynamic_frame_count(tmp_path):
+    source = _frames(tmp_path)[0]
+    frames = [ExtractedFrame(source.path, float(index)) for index in range(12)]
+    evidence_prompt = build_evidence_messages("v1", frames, _audio(path=None, available=False), RouteDecision("visual", False, "off"), google=True)[1]["content"][12]["text"]
+    caption_prompt = build_final_caption_messages(Task("v1", "video", ("formal",)), frames, empty_evidence(), google=True)
+    assert "12 chronological frame timestamps" in evidence_prompt
+    assert "12 chronological timestamps" in caption_prompt[1]["content"][12]["text"]
+    assert "12 separate chronological frames" in caption_prompt[0]["content"]
+
+
 def test_malformed_evidence_and_audio_status_are_normalized_safely():
     payload = {"scene": 42, "main_subjects": "bad", "audio": {"status": "invented", "allowed_caption_facts": ["hello"]}}
     normalized = normalize_routed_evidence(payload, _audio(), RouteDecision("audio_visual", True, "selected"))

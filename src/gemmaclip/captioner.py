@@ -11,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 import tempfile
 from dataclasses import dataclass
+from itertools import combinations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -676,26 +677,30 @@ def request_model_text(
     *,
     temperature: float,
     use_response_format: bool | None = None,
+    max_tokens: int | None = None,
 ) -> str:
+    kwargs: dict[str, Any] = {"use_response_format": use_response_format}
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
     if hasattr(client, "chat_completion_text"):
         try:
-            return client.chat_completion_text(
-                messages,
-                temperature,
-                use_response_format=use_response_format,
-            )
+            return client.chat_completion_text(messages, temperature, **kwargs)
         except TypeError:
-            return client.chat_completion_text(messages, temperature)
+            kwargs.pop("max_tokens", None)
+            try:
+                return client.chat_completion_text(messages, temperature, **kwargs)
+            except TypeError:
+                return client.chat_completion_text(messages, temperature)
 
     if hasattr(client, "chat_completion_json"):
         try:
-            payload = client.chat_completion_json(
-                messages,
-                temperature,
-                use_response_format=use_response_format,
-            )
+            payload = client.chat_completion_json(messages, temperature, **kwargs)
         except TypeError:
-            payload = client.chat_completion_json(messages, temperature)
+            kwargs.pop("max_tokens", None)
+            try:
+                payload = client.chat_completion_json(messages, temperature, **kwargs)
+            except TypeError:
+                payload = client.chat_completion_json(messages, temperature)
         return json.dumps(payload)
 
     raise TypeError("Client does not support text or JSON chat completion methods.")
@@ -984,13 +989,75 @@ def build_evidence_based_captions(
     return {style: templates[style] for style in styles}
 
 
-def cleanup_caption(caption: str, style: str, evidence: dict[str, Any]) -> str:
+def build_bounded_evidence_captions(
+    styles: Sequence[str],
+    evidence: Mapping[str, Any],
+    *,
+    min_words: int,
+    max_words: int,
+) -> dict[str, str]:
+    """Keep deterministic evidence fallback captions inside the requested bounds."""
+    if min_words < 1 or max_words < min_words:
+        raise ValueError("Caption word bounds are invalid.")
+    base = build_evidence_based_captions(styles, evidence)
+    subject = _evidence_subject_phrase(evidence).capitalize()
+    action = _evidence_action_phrase(evidence)
+    setting = _evidence_setting_phrase(evidence)
+    grounded_candidates = [
+        f"{subject} {action} in {setting}.",
+        f"The scene shows {subject.lower()} {action}.",
+        f"{subject} {action}.",
+    ]
+    clauses = (
+        "The scene remains visible.",
+        "The setting remains clear.",
+        "The action stays observable.",
+        "The subject stays in view.",
+        "The surrounding space remains visible.",
+        "The moment remains visually consistent.",
+        "The visible setting stays identifiable.",
+        "The observed activity remains clear.",
+        "The surrounding details remain observable.",
+        "The visible action remains easy to describe.",
+    )
+
+    def word_count(value: str) -> int:
+        return len(value.split())
+
+    def bounded_sentence(style: str, original: str) -> str:
+        if min_words <= word_count(original) <= max_words:
+            return original
+        candidates = [*grounded_candidates]
+        for count in range(1, len(clauses) + 1):
+            candidates.extend(
+                " ".join((candidate, *extra))
+                for candidate in grounded_candidates
+                for extra in combinations(clauses, count)
+            )
+        valid = [candidate for candidate in candidates if min_words <= word_count(candidate) <= max_words]
+        if not valid:
+            raise ValueError(f"Evidence fallback cannot produce a complete {min_words}-{max_words} word caption for {style}.")
+        return max(valid, key=word_count)
+
+    bounded: dict[str, str] = {}
+    for style, caption in base.items():
+        bounded[style] = bounded_sentence(style, caption)
+    return bounded
+
+
+def cleanup_caption(
+    caption: str,
+    style: str,
+    evidence: dict[str, Any],
+    *,
+    max_words: int = MAX_CAPTION_WORDS,
+) -> str:
     cleaned = caption.strip()
     cleaned = _soften_speculation_phrases(cleaned)
     if style == "humorous_tech" and _contains_unsupported_tech_claim(cleaned.lower(), evidence):
         cleaned = _soften_unsupported_tech_claims(cleaned)
     cleaned = _normalize_spacing(cleaned)
-    cleaned = _trim_caption_to_max_words(cleaned, max_words=MAX_CAPTION_WORDS)
+    cleaned = _trim_caption_to_max_words(cleaned, max_words=max_words)
     return cleaned or caption.strip()
 
 
@@ -1112,7 +1179,7 @@ def _evidence_object_phrase(evidence: Mapping[str, Any]) -> str:
 
 def _list_phrase(value: Any, *, fallback: str) -> str:
     if isinstance(value, list):
-        cleaned = [str(item).strip() for item in value if str(item).strip()]
+        cleaned = [str(item).strip() for item in value if item is not None and str(item).strip() and str(item).strip().lower() != "none"]
         if not cleaned:
             return fallback
         if len(cleaned) == 1:
@@ -1120,7 +1187,9 @@ def _list_phrase(value: Any, *, fallback: str) -> str:
         if len(cleaned) == 2:
             return f"{cleaned[0]} and {cleaned[1]}"
         return f"{', '.join(cleaned[:-1])}, and {cleaned[-1]}"
-    cleaned_value = str(value).strip()
+    cleaned_value = "" if value is None else str(value).strip()
+    if cleaned_value.lower() == "none":
+        cleaned_value = ""
     return cleaned_value or fallback
 
 

@@ -5,6 +5,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from gemmaclip.frames import (
+    _CandidateMetrics,
+    _configured_quality_score,
     ExtractedFrame,
     compute_frame_change_score,
     extract_frames,
@@ -51,6 +53,18 @@ def test_aks_lite_returns_empty_when_max_frames_is_zero(tmp_path):
     selected = select_aks_lite_frames(frames, max_frames=0)
 
     assert selected == []
+
+
+def test_change_sensitivity_changes_quality_weighting(tmp_path):
+    frames = make_candidate_frames(tmp_path, 2)
+    metrics = [
+        _CandidateMetrics(frames[0], None, 1.0, 0.0, 0.0),
+        _CandidateMetrics(frames[1], None, 0.6, 1.0, 1.0),
+    ]
+    low = [_configured_quality_score(item, metrics, 0.0) for item in metrics]
+    high = [_configured_quality_score(item, metrics, 1.0) for item in metrics]
+    assert low[0] > low[1]
+    assert high[1] > high[0]
 
 
 def test_aks_lite_includes_first_and_last_frames_when_available(tmp_path):

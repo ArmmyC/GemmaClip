@@ -494,6 +494,156 @@ def extract_aks_lite_frames(
     return selected_frames
 
 
+def extract_configured_frames(
+    task_id: str,
+    video_path: str | Path,
+    metadata: VideoMetadata,
+    *,
+    strategy: str = "hybrid",
+    total_frames: int = 6,
+    anchor_count: int = 4,
+    high_change_count: int = 2,
+    min_spacing_seconds: float = 1.0,
+    change_sensitivity: float = 0.5,
+    destination_root: Path = DEFAULT_FRAMES_DIR,
+    ffmpeg_binary: str = "ffmpeg",
+    command_timeout_seconds: float = 15.0,
+) -> list[ExtractedFrame]:
+    """Extract a user-configured frame set using the shared media primitives.
+
+    The web Lab uses this entry point; the competition presets continue to use
+    ``extract_frames`` unchanged.  Candidate scoring and timestamp extraction
+    are deliberately shared with AKS-Lite and the existing Fireworks hybrid
+    selector rather than being reimplemented in the web layer.
+    """
+    if strategy not in {"uniform", "aks-lite", "hybrid"}:
+        raise ValueError("Unsupported frame strategy.")
+    if total_frames < 2 or total_frames > 16:
+        raise ValueError("Total frames must be between 2 and 16.")
+    if anchor_count < 0 or high_change_count < 0 or anchor_count + high_change_count > total_frames:
+        raise ValueError("Anchor and high-change counts must fit within total frames.")
+    if min_spacing_seconds <= 0 or min_spacing_seconds > 5:
+        raise ValueError("Minimum frame spacing must be between 0 and 5 seconds.")
+    if not 0 <= change_sensitivity <= 1:
+        raise ValueError("Change sensitivity must be between 0 and 1.")
+
+    video_file = Path(video_path)
+    destination_dir = destination_root / safe_task_id(task_id)
+    _prepare_destination_dir(destination_dir)
+
+    if strategy == "uniform":
+        raw = _extract_frames_at_timestamps(
+            video_file,
+            destination_dir,
+            _uniform_timestamps(metadata.duration_seconds, total_frames),
+            prefix="frame",
+            ffmpeg_binary=ffmpeg_binary,
+            command_timeout_seconds=command_timeout_seconds,
+        )
+        return [ExtractedFrame(frame.path, frame.timestamp_seconds, "uniform", 0.0) for frame in raw]
+
+    candidate_dir = destination_dir / "_lab_candidates"
+    candidate_count = max(total_frames * 3, 18)
+    candidates = _extract_frames_at_timestamps(
+        video_file,
+        candidate_dir,
+        _uniform_timestamps(metadata.duration_seconds, candidate_count),
+        prefix="candidate",
+        ffmpeg_binary=ffmpeg_binary,
+        command_timeout_seconds=command_timeout_seconds,
+    )
+    metrics = _load_candidate_metrics(candidates)
+    if not metrics:
+        raise RuntimeError("Frame extraction produced no readable candidates.")
+
+    if strategy == "aks-lite":
+        selected = select_aks_lite_frames([metric.frame for metric in metrics], max_frames=total_frames)
+        roles = {id(frame): "dynamic" for frame in selected}
+    else:
+        selected, roles = _select_configured_hybrid_frames(
+            metrics,
+            duration_seconds=metadata.duration_seconds,
+            total_frames=total_frames,
+            anchor_count=anchor_count,
+            high_change_count=high_change_count,
+            min_spacing_seconds=min_spacing_seconds,
+            change_sensitivity=change_sensitivity,
+        )
+
+    if len(selected) < 2:
+        raise RuntimeError("Frame extraction did not produce enough usable frames.")
+    result: list[ExtractedFrame] = []
+    for index, frame in enumerate(sorted(selected, key=lambda item: item.timestamp_seconds), start=1):
+        destination = destination_dir / f"frame_{index:03d}.jpg"
+        shutil.copy2(frame.path, destination)
+        result.append(ExtractedFrame(destination, frame.timestamp_seconds, roles.get(id(frame), "uniform"), _metric_score(frame, metrics)))
+    shutil.rmtree(candidate_dir, ignore_errors=True)
+    return result
+
+
+def _select_configured_hybrid_frames(
+    metrics: Sequence[_CandidateMetrics],
+    *,
+    duration_seconds: float,
+    total_frames: int,
+    anchor_count: int,
+    high_change_count: int,
+    min_spacing_seconds: float,
+    change_sensitivity: float,
+) -> tuple[list[ExtractedFrame], dict[int, str]]:
+    anchors = _uniform_timestamps(duration_seconds, anchor_count) if anchor_count else []
+    selected: list[ExtractedFrame] = []
+    roles: dict[int, str] = {}
+    for timestamp in anchors:
+        nearest = min(metrics, key=lambda item: abs(item.frame.timestamp_seconds - timestamp))
+        if all(abs(nearest.frame.timestamp_seconds - item.timestamp_seconds) >= min_spacing_seconds for item in selected):
+            selected.append(nearest.frame)
+            roles[id(nearest.frame)] = "anchor"
+
+    ranked = sorted(
+        metrics,
+        key=lambda item: _configured_quality_score(item, list(metrics), change_sensitivity),
+        reverse=True,
+    )
+    wanted_dynamic = min(high_change_count, max(0, total_frames - len(selected)))
+    for metric in ranked:
+        if len([item for item in selected if roles.get(id(item)) == "dynamic"]) >= wanted_dynamic:
+            break
+        if all(abs(metric.frame.timestamp_seconds - item.timestamp_seconds) >= min_spacing_seconds for item in selected):
+            selected.append(metric.frame)
+            roles[id(metric.frame)] = "dynamic"
+
+    if len(selected) < total_frames:
+        for metric in sorted(metrics, key=lambda item: item.frame.timestamp_seconds):
+            if len(selected) >= total_frames:
+                break
+            if not any(abs(metric.frame.timestamp_seconds - item.timestamp_seconds) < min_spacing_seconds for item in selected):
+                selected.append(metric.frame)
+                roles[id(metric.frame)] = "uniform"
+    return selected[:total_frames], roles
+
+
+def _metric_score(frame: ExtractedFrame, metrics: Sequence[_CandidateMetrics]) -> float:
+    for metric in metrics:
+        if metric.frame is frame:
+            return _quality_score(metric, list(metrics))
+    return float(frame.change_score or 0.0)
+
+
+def _configured_quality_score(
+    metric: _CandidateMetrics,
+    metrics: list[_CandidateMetrics],
+    change_sensitivity: float,
+) -> float:
+    """Weight visual quality versus temporal change without a global multiplier."""
+    sharpness_score = _normalize_metric(metric.sharpness, [item.sharpness for item in metrics])
+    scene_score = _normalize_metric(metric.scene_change, [item.scene_change for item in metrics])
+    motion_score = _normalize_metric(metric.motion, [item.motion for item in metrics])
+    change_weight = 0.4 + (0.4 * change_sensitivity)
+    quality_weight = 1.0 - change_weight
+    return quality_weight * sharpness_score + change_weight * ((scene_score + motion_score) / 2.0)
+
+
 def select_aks_lite_frames(
     candidates: list[ExtractedFrame],
     max_frames: int = MAX_GEMMA_FRAMES,

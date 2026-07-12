@@ -6,10 +6,10 @@ export function LabRunContent({
   run,
   children,
 }: {
-  run: Pick<Run, "status" | "error"> | undefined;
+  run: Pick<Run, "status" | "error" | "stageErrors" | "mode"> | undefined;
   children: ReactNode;
 }) {
-  if (run?.status === "error") {
+  if (run?.mode === "quick" && run.status === "error") {
     return (
       <ErrorState
         title="Pipeline processing failed"

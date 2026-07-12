@@ -1,6 +1,6 @@
 # GemmaClip Web App Specification
 
-> Implementation status (July 2026): `web/` and the optional FastAPI backend implement the real Quick Caption vertical slice and inspection of the completed stored run throughout Gemma Lab. Interactive stage reruns, persisted audio playback, and experiment creation/comparison remain intentionally deferred and disabled; no mock results are substituted. See `docs/WEB_DEVELOPMENT.md`.
+> Implementation status (July 2026): `web/` and the optional FastAPI backend implement the real Quick Caption vertical slice and an interactive, stage-driven Gemma Lab. Manual Frames, Audio, Evidence, and Captions jobs persist configuration and artifacts; experiments are immutable snapshots compared from stored values. Audio candidates are temporary and cleaned after inspection or evidence generation. See `docs/WEB_DEVELOPMENT.md`.
 
 > Hardening note: public runs distinguish model generation, grounded evidence fallback, and deterministic fallback. Only the first two may become ready; grounded fallback is visibly degraded. Interrupted processing is recovered as a safe error on restart, expired inactive runs are cleaned according to `GEMMACLIP_WEB_RUN_TTL_SECONDS`, and active runs cannot be deleted. Caption cards describe grounding availability, not unsupported exact per-caption attribution. This remains a single-process demo architecture, not a public-scale job system.
 
