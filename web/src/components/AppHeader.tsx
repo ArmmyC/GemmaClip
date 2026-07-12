@@ -21,12 +21,12 @@ export function AppHeader({ variant = "app", className }: Props) {
           <LogoMark />
           <div className="leading-none">
             <div className="font-display text-lg font-semibold tracking-[-0.035em]">GemmaClip</div>
-            <div className={cn("mt-1 font-mono text-[9px] uppercase tracking-[0.19em] text-muted-foreground", variant === "lab" && "text-paper/55")}>
+            <div className={cn("mt-1 font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground", variant === "lab" && "text-paper/55")}>
               pure Gemma pipeline
             </div>
           </div>
         </Link>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <span className={cn("hidden items-center gap-2 text-muted-foreground sm:flex", variant === "lab" && "text-paper/55")}>
             <ServiceHealthIndicator />
           </span>

@@ -10,7 +10,7 @@ interface Props {
 
 export function PrevNext({ runId, prev, next }: Props) {
   return (
-    <nav className="mt-10 flex flex-col gap-4 border-t border-white/10 pt-6 sm:flex-row sm:items-center sm:justify-between" aria-label="Lab stage navigation">
+    <nav className="mt-12 flex flex-col gap-4 border-t border-white/10 pt-5 sm:flex-row sm:items-center sm:justify-between" aria-label="Lab stage navigation">
       <div className="min-w-0">
         {prev && (
           <Button asChild variant="ghost" size="sm" className="min-h-11 max-w-full justify-start gap-2 px-3 text-left">
@@ -21,7 +21,7 @@ export function PrevNext({ runId, prev, next }: Props) {
         )}
       </div>
       <div className="flex items-center justify-between gap-3 sm:justify-end">
-        <span className="hidden font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground sm:inline">Continue through Lab</span>
+        <span className="hidden font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground sm:inline">Next stage</span>
         {next && (
           <Button asChild size="sm" className="min-h-11 gap-2">
             <Link to={next.to} params={{ runId }} aria-label={`Next stage: ${next.label}`}>

@@ -24,10 +24,13 @@ export function PipelineStepper({ runId, states, status, generationOutcome }: Pr
   return (
     <aside className="border-b border-white/10 bg-card/45 lg:sticky lg:top-16 lg:h-[calc(100dvh-4rem)] lg:border-b-0 lg:border-r lg:bg-card/25" aria-label="Lab pipeline">
       <div className="h-full px-4 py-3 sm:px-6 lg:px-5 lg:py-7">
-        <div className="mb-4 flex items-center justify-between gap-4 lg:block">
+        <div className="mb-5 flex items-center justify-between gap-4 lg:mb-8 lg:block">
           <div>
-            <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Pipeline rail</div>
-            <div className="mt-1.5 truncate font-mono text-xs text-foreground">RUN {shortRunId(runId)}</div>
+            <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.16em] text-lab">
+              <span className="h-1.5 w-1.5 rounded-full bg-lab" aria-hidden="true" />
+              Gemma Lab
+            </div>
+            <div className="mt-2 truncate font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Run {shortRunId(runId)}</div>
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground lg:hidden">
             <span className={cn("h-1.5 w-1.5 rounded-full", status === "ready" ? "bg-success" : status === "error" ? "bg-danger" : "bg-ember")} aria-hidden="true" />
@@ -48,10 +51,10 @@ export function PipelineStepper({ runId, states, status, generationOutcome }: Pr
                   aria-current={active ? "step" : undefined}
                   aria-label={`${s.label}, ${state}`}
                   className={cn(
-                    "group flex min-h-11 items-center gap-2.5 rounded-md border border-transparent px-3 py-2 text-sm transition-colors",
+                    "group flex min-h-11 items-center gap-2.5 rounded-md border px-3 py-2 text-sm transition-colors",
                     active
-                      ? "stage-active bg-accent text-foreground"
-                      : "text-muted-foreground hover:border-white/10 hover:bg-white/[0.03] hover:text-foreground",
+                      ? "stage-active border-ember/25 bg-ember-soft/10 text-foreground"
+                      : "border-transparent text-muted-foreground hover:border-white/10 hover:bg-white/[0.03] hover:text-foreground",
                   )}
                 >
                   <span
@@ -90,12 +93,12 @@ export function PipelineStepper({ runId, states, status, generationOutcome }: Pr
           </ol>
         </nav>
         <div className="mt-6 hidden border-t border-white/10 pt-4 lg:block">
-          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Run status</div>
+          <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Run status</div>
           <div className="mt-2 flex items-center gap-2 text-xs">
             <span className={cn("h-1.5 w-1.5 rounded-full", status === "ready" ? "bg-success" : status === "error" ? "bg-danger" : "bg-ember")} aria-hidden="true" />
             <span className="capitalize">{status ?? "processing"}</span>
           </div>
-          {generationOutcome && <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{generationOutcome.replaceAll("_", " ")}</div>}
+          {generationOutcome && <div className="mt-2 font-mono text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{generationOutcome.replaceAll("_", " ")}</div>}
         </div>
       </div>
     </aside>

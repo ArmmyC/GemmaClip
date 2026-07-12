@@ -15,12 +15,12 @@ function LabLayout() {
 
   return (
     <div className="min-h-[100dvh] bg-background text-foreground">
-      <AppHeader />
-      <div className="mx-auto grid min-h-[calc(100dvh-4rem)] max-w-[1440px] lg:grid-cols-[232px_minmax(0,1fr)]">
+      <AppHeader variant="lab" />
+      <div className="mx-auto grid min-h-[calc(100dvh-4rem)] max-w-[1440px] border-x border-white/[0.04] lg:grid-cols-[248px_minmax(0,1fr)]">
       {run && <PipelineStepper runId={runId} states={run.stages} status={run.status} generationOutcome={run.generationOutcome} />}
-      <main className="min-w-0 px-4 py-7 sm:px-6 sm:py-9 lg:px-10 lg:py-12">
+      <main className="min-w-0 bg-background/45 px-4 py-8 sm:px-8 sm:py-10 lg:px-12 lg:py-14">
         {isLoading && (
-          <div className="animate-pulse font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+          <div className="animate-pulse font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground" role="status" aria-live="polite">
             loading run…
           </div>
         )}

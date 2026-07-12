@@ -5,10 +5,10 @@ import type { StageId } from "@/lib/types";
 
 export function ProcessingState({ description = "GemmaClip is still preparing this stage. It will update automatically." }: { description?: ReactNode }) {
   return (
-    <div className="glass-panel rounded-xl p-6 sm:p-8" role="status" aria-live="polite">
+    <div className="rounded-xl border border-white/10 bg-card/80 p-6 shadow-[0_8px_24px_rgb(0_0_0_/_0.12)] sm:p-8" role="status" aria-live="polite">
       <div className="flex items-center gap-3">
         <Loader2 className="h-4 w-4 animate-spin text-ember motion-reduce:animate-none" aria-hidden="true" />
-        <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Stage in progress</div>
+        <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Stage in progress</div>
       </div>
       <div className="mt-4 font-display text-xl">Processing this stage</div>
       <p className="mt-2 max-w-lg text-sm text-muted-foreground">{description}</p>
@@ -64,6 +64,7 @@ export function ErrorState({
         "flex min-h-48 flex-col items-center justify-center rounded-xl border border-danger/35 bg-danger/5 p-8 text-center",
         className,
       )}
+      role="alert"
     >
       <AlertTriangle className="mb-3 h-8 w-8 text-destructive" />
       <div className="font-display text-lg">{title}</div>

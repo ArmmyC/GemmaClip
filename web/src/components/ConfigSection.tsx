@@ -21,15 +21,15 @@ export function ConfigSection({
   return (
     <section
       className={cn(
-        "glass-panel rounded-xl p-4 sm:p-5",
-        tone === "lab" && "border-lab/25 bg-lab-soft/5",
-        tone === "ember" && "border-ember/25 bg-ember-soft/5",
+        "rounded-xl border border-white/10 bg-card/80 p-4 shadow-[0_8px_24px_rgb(0_0_0_/_0.12)] sm:p-5",
+        tone === "lab" && "border-lab/25 bg-lab-soft/[0.07]",
+        tone === "ember" && "border-ember/25 bg-ember-soft/[0.07]",
         className,
       )}
     >
-      <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+      <header className="mb-5 flex flex-col gap-4 border-b border-white/10 pb-5 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
         <div>
-          <h3 className="font-display text-xl leading-tight tracking-tight">{title}</h3>
+          <h3 className="font-display text-lg font-semibold leading-tight tracking-[-0.02em]">{title}</h3>
           {description && (
             <p className="mt-1 max-w-prose text-sm text-muted-foreground">
               {description}

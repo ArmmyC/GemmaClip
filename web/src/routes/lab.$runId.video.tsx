@@ -155,10 +155,10 @@ export function StageHeader({
   return (
     <header className="mb-7 max-w-3xl sm:mb-9">
       <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-        <span className="h-px w-8 bg-ember" aria-hidden="true" />
+        <span className="h-px w-8 bg-lab" aria-hidden="true" />
         {eyebrow}
       </div>
-      <h1 className="mt-3 font-display text-3xl font-semibold leading-[1.03] tracking-[-0.035em] text-balance sm:text-4xl md:text-5xl">
+      <h1 className="mt-4 font-display text-3xl font-semibold leading-[1.06] tracking-[-0.025em] text-balance sm:text-4xl md:text-4xl">
         {title}
       </h1>
       {description && (
@@ -171,7 +171,7 @@ export function StageHeader({
 function MiniStat({ k, v }: { k: string; v: string }) {
   return (
     <div className="rounded-lg border border-border bg-background px-3 py-2">
-      <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
+      <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
         {k}
       </div>
       <div className="mt-0.5 font-mono text-sm capitalize">{v}</div>
