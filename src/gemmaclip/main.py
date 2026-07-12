@@ -19,6 +19,8 @@ from gemmaclip.gemma_client import (
     load_gemma_config,
 )
 from gemmaclip.io import Task, make_frame_manifest_entry, read_tasks, write_frame_manifest, write_results
+from gemmaclip.leaderboard.config import load_fireworks_leaderboard_config
+from gemmaclip.leaderboard.pipeline import generate_fireworks_leaderboard_captions
 from gemmaclip.validate import validate_results
 from gemmaclip.video import probe_video
 
@@ -107,12 +109,14 @@ def process_task(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
         values = env if env is not None else os.environ
-        config = None if dry_run else load_gemma_config(values)
+        leaderboard_config = load_fireworks_leaderboard_config(values)
+        config = None if dry_run or leaderboard_config is not None else load_gemma_config(values)
         use_google_fast_frames = bool(
             config is not None and config.provider in {DEFAULT_PROVIDER_GOOGLE, DEFAULT_PROVIDER_OPENROUTER}
         )
         use_fireworks_judge_frames = bool(
-            config is not None and config.provider in {DEFAULT_PROVIDER_FIREWORKS_JUDGE, DEFAULT_PROVIDER_ROUTED_GEMMA}
+            (config is not None and config.provider in {DEFAULT_PROVIDER_FIREWORKS_JUDGE, DEFAULT_PROVIDER_ROUTED_GEMMA})
+            or leaderboard_config is not None
         )
 
         video_path = download_video(
@@ -142,17 +146,29 @@ def process_task(
             metadata.frame_count if metadata.frame_count is not None else "unknown",
             len(extracted_frames),
         )
-        captions = generate_captions(
-            task,
-            extracted_frames,
-            dry_run=dry_run,
-            debug_dir=debug_dir,
-            env=values,
-            logger=LOGGER,
-            remaining_seconds=remaining_seconds,
-            remaining_time_fn=remaining_time_fn,
-            video_path=video_path,
-        )
+        if leaderboard_config is not None:
+            captions = generate_fireworks_leaderboard_captions(
+                task,
+                extracted_frames,
+                config=leaderboard_config,
+                debug_dir=debug_dir,
+                remaining_seconds=remaining_seconds,
+                remaining_time_fn=remaining_time_fn,
+                allow_remote=not dry_run,
+                logger=LOGGER,
+            )
+        else:
+            captions = generate_captions(
+                task,
+                extracted_frames,
+                dry_run=dry_run,
+                debug_dir=debug_dir,
+                env=values,
+                logger=LOGGER,
+                remaining_seconds=remaining_seconds,
+                remaining_time_fn=remaining_time_fn,
+                video_path=video_path,
+            )
     except Exception as exc:
         LOGGER.warning("Task %s failed, writing fallback captions: %s", task.task_id, exc)
         captions = build_fallback_captions(task.styles)
