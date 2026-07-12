@@ -99,9 +99,10 @@ function EvidenceStage() {
           selected={ev.selectedRoute}
           reason={ev.routeReason}
           auto={route === "auto"}
-          audio={ev.audio}
-          provider={ev.routeProvider}
-          modality={ev.routeModality}
+           audio={ev.audio}
+           provider={ev.routeProvider}
+           model={ev.routeModel}
+           modality={ev.routeModality}
           audioFallbackOccurred={ev.audioFallbackOccurred}
         /> : <div className="rounded-lg border border-white/10 bg-card/50 px-4 py-3 text-sm text-muted-foreground">Evidence has not been built for this run yet. Configure the route and build evidence to see provenance.</div>}
       </div>

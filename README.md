@@ -47,7 +47,7 @@ Runtime model configuration:
 
 The `routed_gemma` provider makes Gemma 4 the reasoning and writing core. Gemma 4 26B A4B produces visual evidence when audio is absent, silent, or unsafe to process. Gemma 4 12B Unified produces routed audio-visual evidence when a bounded audio window is useful and runtime permits. Gemma 4 31B then receives the six chronological hybrid frames, structured evidence, requested styles, and exact output schema to produce final captions.
 
-Fireworks is the primary endpoint for each role. Visual evidence falls back to Google Gemma 4 31B. Fireworks audio-visual inference is optional: if it is unavailable or invalid, GemmaClip drops audio and continues through Google Gemma 4 31B using visual frames only. Caption synthesis falls back from Fireworks 31B to Google 31B. No non-Gemma model is silently substituted, and audio is never sent to Google 31B in this fallback configuration.
+Fireworks is the primary endpoint for visual evidence and caption synthesis. An optional AMD Cloud OpenAI-compatible endpoint can replace only the audio-visual evidence role through `AMD_GEMMA_AUDIO_VISUAL_API_KEY`, `AMD_GEMMA_AUDIO_VISUAL_BASE_URL`, and `AMD_GEMMA_AUDIO_VISUAL_MODEL`. If the configured audio-visual attempt is unavailable or invalid, GemmaClip drops audio and continues through Google Gemma 4 31B using visual frames only. Caption synthesis falls back from Fireworks 31B to Google 31B. No non-Gemma model is silently substituted, and audio is never sent to Google 31B in this fallback configuration.
 
 ```text
 GOOGLE_GEMMA_VISUAL_MODEL=gemma-4-31b-it

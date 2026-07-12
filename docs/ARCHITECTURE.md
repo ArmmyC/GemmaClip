@@ -35,7 +35,7 @@ Quick Caption selects the Balanced preset: six chronological Hybrid frames, four
 
 ## Gemma routing and outcomes
 
-The normal visual route uses Gemma 4 26B A4B evidence and Gemma 4 31B caption writing. When a bounded audio candidate is usable and runtime allows, Gemma 4 12B Unified may produce audio-visual evidence. Fireworks is attempted first when configured. A failed Fireworks audio-visual attempt discards audio and uses Google Gemma 4 31B with frames only. Google never receives audio through that fallback. Successful provider fallback remains `model_generated` and is not marked degraded.
+The normal visual route uses Gemma 4 26B A4B evidence and Gemma 4 31B caption writing. When a bounded audio candidate is usable and runtime allows, the configured audio-visual Gemma role may produce evidence. An AMD Cloud override can replace only the Fireworks 12B audio-visual attempt. A failed audio-visual attempt discards audio and uses Google Gemma 4 31B with frames only. Google never receives audio through that fallback. Successful provider fallback remains `model_generated` and is not marked degraded.
 
 Runs distinguish `model_generated`, `evidence_fallback`, and `deterministic_fallback`. Grounded evidence fallback is ready but visibly degraded. Deterministic fallback is an error for the public demo rather than a fabricated successful Gemma result.
 

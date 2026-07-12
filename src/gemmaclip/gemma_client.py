@@ -20,6 +20,7 @@ DEFAULT_PROVIDER_GOOGLE = "google"
 DEFAULT_PROVIDER_OPENROUTER = "openrouter"
 DEFAULT_PROVIDER_FIREWORKS_JUDGE = "fireworks_judge"
 DEFAULT_PROVIDER_ROUTED_GEMMA = "routed_gemma"
+DEFAULT_PROVIDER_AMD_CLOUD = "amd_cloud"
 VALID_PROVIDERS = {
     DEFAULT_PROVIDER_FIREWORKS,
     DEFAULT_PROVIDER_GOOGLE,
@@ -42,6 +43,7 @@ DEFAULT_FIREWORKS_GEMMA_CAPTION_MODEL = "accounts/fireworks/models/gemma-4-31b-i
 DEFAULT_GOOGLE_GEMMA_VISUAL_MODEL = "gemma-4-31b-it"
 DEFAULT_GOOGLE_GEMMA_AUDIO_VISUAL_MODEL = "gemma-4-12b-unified-it"
 DEFAULT_GOOGLE_GEMMA_CAPTION_MODEL = "gemma-4-31b-it"
+DEFAULT_AMD_GEMMA_AUDIO_VISUAL_MODEL = "gemma-4-12b-it"
 DEFAULT_GEMMA_MAX_TOKENS = 2048
 DEFAULT_TOP_K = 40
 DEFAULT_GOOGLE_MAX_RETRIES = 2
@@ -141,12 +143,23 @@ class RoutedGemmaConfig:
     google_visual_model: str
     google_audio_visual_model: str
     google_caption_model: str
+    amd_audio_visual_api_key: str = ""
+    amd_audio_visual_base_url: str = ""
+    amd_audio_visual_model: str = DEFAULT_AMD_GEMMA_AUDIO_VISUAL_MODEL
     max_tokens: int = DEFAULT_GEMMA_MAX_TOKENS
     provider: str = DEFAULT_PROVIDER_ROUTED_GEMMA
 
     @property
     def has_credentials(self) -> bool:
-        return bool(self.fireworks_api_key or self.google_api_key)
+        return bool(
+            self.fireworks_api_key
+            or self.google_api_key
+            or (self.amd_audio_visual_api_key and self.amd_audio_visual_base_url)
+        )
+
+    @property
+    def amd_audio_visual_configured(self) -> bool:
+        return bool(self.amd_audio_visual_api_key and self.amd_audio_visual_base_url)
 
     def role_configs(self, role: str) -> tuple[GemmaModelConfig, ...]:
         fireworks_models = {
@@ -162,7 +175,13 @@ class RoutedGemmaConfig:
         if role not in fireworks_models:
             raise ValueError(f"Unknown routed Gemma model role: {role}")
         configs: list[GemmaModelConfig] = []
-        if self.fireworks_api_key:
+        if role == "audio_visual" and self.amd_audio_visual_configured:
+            configs.append(GemmaModelConfig(
+                api_key=self.amd_audio_visual_api_key, base_url=self.amd_audio_visual_base_url,
+                model=self.amd_audio_visual_model, fallback_models=(), max_tokens=self.max_tokens,
+                provider=DEFAULT_PROVIDER_AMD_CLOUD,
+            ))
+        elif self.fireworks_api_key:
             configs.append(GemmaModelConfig(
                 api_key=self.fireworks_api_key, base_url=self.fireworks_base_url,
                 model=fireworks_models[role], fallback_models=(), max_tokens=self.max_tokens,
@@ -286,6 +305,9 @@ def load_routed_gemma_config(env: Mapping[str, str] | None = None) -> RoutedGemm
         google_visual_model=values.get("GOOGLE_GEMMA_VISUAL_MODEL", "").strip() or DEFAULT_GOOGLE_GEMMA_VISUAL_MODEL,
         google_audio_visual_model=values.get("GOOGLE_GEMMA_AUDIO_VISUAL_MODEL", "").strip() or DEFAULT_GOOGLE_GEMMA_AUDIO_VISUAL_MODEL,
         google_caption_model=values.get("GOOGLE_GEMMA_CAPTION_MODEL", "").strip() or DEFAULT_GOOGLE_GEMMA_CAPTION_MODEL,
+        amd_audio_visual_api_key=values.get("AMD_GEMMA_AUDIO_VISUAL_API_KEY", "").strip(),
+        amd_audio_visual_base_url=values.get("AMD_GEMMA_AUDIO_VISUAL_BASE_URL", "").strip(),
+        amd_audio_visual_model=values.get("AMD_GEMMA_AUDIO_VISUAL_MODEL", "").strip() or DEFAULT_AMD_GEMMA_AUDIO_VISUAL_MODEL,
         max_tokens=_parse_max_tokens(values.get("GEMMA_MAX_TOKENS")),
     )
 
@@ -349,7 +371,7 @@ class GemmaClient:
         max_tokens: int | None = None,
     ) -> dict[str, Any]:
         if not self._config.base_url:
-            raise RuntimeError("Fireworks client requires a base URL.")
+            raise RuntimeError("OpenAI-compatible Gemma client requires a base URL.")
 
         url = f"{self._config.base_url.rstrip('/')}/chat/completions"
         attempted_failures: list[tuple[str, httpx.HTTPError]] = []

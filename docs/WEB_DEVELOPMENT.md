@@ -72,7 +72,7 @@ At API startup, interrupted `processing` runs are marked error without deleting 
 
 Caption cards report whether visual and caption-safe audio grounding context was available. Exact per-caption or sentence-level attribution is not tracked and is not claimed.
 
-Evidence results report the actual safe provider, model, and modality plus whether an audio fallback occurred. A successful Fireworks-to-Google fallback remains `model_generated` and is not degraded. When Fireworks audio-visual inference is unavailable, the web run explains that audio was dropped and Google Gemma 4 31B continued with frames only.
+Evidence results report the actual safe provider, model, and modality plus whether an audio fallback occurred. A successful audio-provider-to-Google fallback remains `model_generated` and is not degraded. When the configured AMD Cloud or Fireworks audio-visual inference is unavailable, the web run explains that audio was dropped and Google Gemma 4 31B continued with frames only.
 
 ## Current scope
 

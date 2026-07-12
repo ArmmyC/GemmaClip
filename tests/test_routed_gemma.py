@@ -10,6 +10,7 @@ import pytest
 from gemmaclip.audio import AudioEvidenceCandidate, AudioSettings
 from gemmaclip.frames import ExtractedFrame
 from gemmaclip.gemma_client import (
+    DEFAULT_PROVIDER_AMD_CLOUD,
     DEFAULT_PROVIDER_FIREWORKS,
     DEFAULT_PROVIDER_GOOGLE,
     DEFAULT_PROVIDER_ROUTED_GEMMA,
@@ -69,6 +70,32 @@ def test_routed_provider_config_preserves_same_role_models_and_credential_combin
     assert len(load_gemma_config({**env, "GOOGLE_API_KEY": ""}).role_configs("caption")) == 1
     assert load_gemma_config({**env, "FIREWORKS_API_KEY": ""}).role_configs("caption")[0].provider == DEFAULT_PROVIDER_GOOGLE
     assert not load_gemma_config({"GEMMACLIP_PROVIDER": "routed_gemma"}).has_credentials
+
+
+def test_amd_cloud_override_replaces_only_the_audio_visual_fireworks_role():
+    config = load_gemma_config({
+        "GEMMACLIP_PROVIDER": "routed_gemma",
+        "FIREWORKS_API_KEY": "fw",
+        "GOOGLE_API_KEY": "google",
+        "AMD_GEMMA_AUDIO_VISUAL_API_KEY": "amd",
+        "AMD_GEMMA_AUDIO_VISUAL_BASE_URL": "http://amd.example/v1",
+        "AMD_GEMMA_AUDIO_VISUAL_MODEL": "gemma-4-12b-it",
+    })
+
+    assert config.has_credentials
+    assert config.amd_audio_visual_configured
+    assert [(item.provider, item.model) for item in config.role_configs("visual")] == [
+        (DEFAULT_PROVIDER_FIREWORKS, config.fireworks_visual_model),
+        (DEFAULT_PROVIDER_GOOGLE, config.google_visual_model),
+    ]
+    assert [(item.provider, item.model, item.base_url) for item in config.role_configs("audio_visual")] == [
+        (DEFAULT_PROVIDER_AMD_CLOUD, "gemma-4-12b-it", "http://amd.example/v1"),
+        (DEFAULT_PROVIDER_GOOGLE, config.google_audio_visual_model, None),
+    ]
+    assert [(item.provider, item.model) for item in config.role_configs("caption")] == [
+        (DEFAULT_PROVIDER_FIREWORKS, config.fireworks_caption_model),
+        (DEFAULT_PROVIDER_GOOGLE, config.google_caption_model),
+    ]
 
 
 def test_default_routed_models_are_gemma_for_every_role():
@@ -199,6 +226,40 @@ def test_each_model_role_falls_back_from_fireworks_to_google(role, fireworks_mod
     )
     assert text == '{"ok": true}'
     assert calls == [(DEFAULT_PROVIDER_FIREWORKS, fireworks_model), (DEFAULT_PROVIDER_GOOGLE, google_model)]
+
+
+def test_amd_audio_visual_role_falls_back_to_google_visual_without_changing_other_roles():
+    config = load_gemma_config({
+        "GEMMACLIP_PROVIDER": "routed_gemma",
+        "FIREWORKS_API_KEY": "fw",
+        "GOOGLE_API_KEY": "google",
+        "AMD_GEMMA_AUDIO_VISUAL_API_KEY": "amd",
+        "AMD_GEMMA_AUDIO_VISUAL_BASE_URL": "http://amd.example/v1",
+        "AMD_GEMMA_AUDIO_VISUAL_MODEL": "gemma-4-12b-it",
+    })
+    calls = []
+
+    class Client:
+        def __init__(self, model_config):
+            self.model_config = model_config
+
+        def chat_completion_text(self, messages, temperature, **kwargs):
+            calls.append((self.model_config.provider, self.model_config.model))
+            if self.model_config.provider == DEFAULT_PROVIDER_AMD_CLOUD:
+                raise RuntimeError("AMD deployment unavailable")
+            return '{"ok": true}'
+
+    text = _call_role_with_fallback(
+        "v1", "audio_visual", config, Client, lambda provider: [], temperature=0,
+        logger=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
+        remaining_time_fn=lambda: 500.0, minimum_remaining_seconds=1.0,
+    )
+
+    assert text == '{"ok": true}'
+    assert calls == [
+        (DEFAULT_PROVIDER_AMD_CLOUD, "gemma-4-12b-it"),
+        (DEFAULT_PROVIDER_GOOGLE, config.google_audio_visual_model),
+    ]
 
 
 def test_normal_successful_routed_path_uses_exactly_two_model_calls(tmp_path):

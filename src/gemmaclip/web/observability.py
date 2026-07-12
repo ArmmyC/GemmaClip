@@ -74,6 +74,8 @@ def safe_model_label(model: Any) -> str:
     value = str(model or "").lower()
     if "12b" in value and "unified" in value:
         return "Gemma 4 12B Unified"
+    if "12b" in value:
+        return "Gemma 4 12B"
     if "26b" in value and "a4b" in value:
         return "Gemma 4 26B A4B"
     if "31b" in value:

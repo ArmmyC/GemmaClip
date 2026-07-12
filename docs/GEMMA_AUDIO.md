@@ -8,7 +8,7 @@ For `auto` and `always`, GemmaClip uses `ffprobe` to detect an audio stream and 
 
 `off` always uses visual evidence. `always` selects Unified whenever extraction succeeds, audio is non-silent, and the runtime threshold is met. `auto` applies the same conservative checks and requires a useful positive-duration selected window. Audio preprocessing is not started when the live runtime is already below the threshold, and runtime is checked again afterward before selecting Unified. The model—not the RMS energy heuristic—decides whether speech or relevant audio information actually exists.
 
-Fireworks audio-visual inference is optional. If Unified is unavailable, fails, times out, or returns invalid evidence, GemmaClip removes the selected audio attachment and rebuilds a visual-only request for Google Gemma 4 31B. Google receives six frames and a no-audio instruction; normalized audio status becomes `unavailable`, with no transcript or caption-safe audio facts.
+The audio-visual role can use an AMD Cloud OpenAI-compatible override through `AMD_GEMMA_AUDIO_VISUAL_API_KEY`, `AMD_GEMMA_AUDIO_VISUAL_BASE_URL`, and `AMD_GEMMA_AUDIO_VISUAL_MODEL`. When that override is not configured, Fireworks Unified remains the primary. If the configured audio-visual endpoint is unavailable, fails, times out, or returns invalid evidence, GemmaClip removes the selected audio attachment and rebuilds a visual-only request for Google Gemma 4 31B. Google receives six frames and a no-audio instruction; normalized audio status becomes `unavailable`, with no transcript or caption-safe audio facts.
 
 ## Settings
 
@@ -26,6 +26,6 @@ Invalid modes safely normalize to `auto`. Invalid numeric values use conservativ
 
 Only the selected window is analyzed, so speech elsewhere may be missed. Loud non-speech audio may be routed to Unified; the evidence prompt must classify it rather than assume speech. Uncertain transcripts remain uncertain. Audio claim categories become usable only through `allowed_caption_facts`, when evidence status is `usable` and visual consistency is not contradictory. Otherwise final captions cannot quote dialogue or mention speech, music, noise, intent, or other audio-derived claims. The full transcript is never caption-safe by default.
 
-Fireworks audio wire compatibility and configured deployment IDs require live verification. Google model IDs also require verification with the submitting account; local tests do not claim live provider compatibility. The production Google 31B fallback does not process audio.
+The AMD endpoint must expose an OpenAI-compatible `/v1/chat/completions` route and accept the model ID configured in `AMD_GEMMA_AUDIO_VISUAL_MODEL`. Google model IDs also require verification with the submitting account; local tests do not claim live provider compatibility. The production Google 31B fallback does not process audio.
 
 Logs contain route metadata and timing but never raw bytes, base64 payloads, signed URLs, keys, private endpoints, or full provider responses. Debug evidence and captions are sanitized structured outputs only.

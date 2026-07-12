@@ -14,13 +14,13 @@ The live deadline is checked before every Fireworks and Google attempt. If a pri
 
 Every attempt includes the provider request, text extraction, JSON extraction, and evidence or caption validation. Empty, malformed, or invalid output continues to the next safe attempt:
 
-| Role | Fireworks | Google fallback |
+| Role | Primary | Google fallback |
 | --- | --- | --- |
 | Visual evidence | `FIREWORKS_GEMMA_VISUAL_MODEL` | `GOOGLE_GEMMA_VISUAL_MODEL` |
-| Audio-visual evidence | `FIREWORKS_GEMMA_AUDIO_VISUAL_MODEL` with frames and audio | `GOOGLE_GEMMA_VISUAL_MODEL` with frames only |
+| Audio-visual evidence | AMD Cloud override when configured, otherwise `FIREWORKS_GEMMA_AUDIO_VISUAL_MODEL`, with frames and audio | `GOOGLE_GEMMA_VISUAL_MODEL` with frames only |
 | Final captions | `FIREWORKS_GEMMA_CAPTION_MODEL` | `GOOGLE_GEMMA_CAPTION_MODEL` |
 
-The Google visual and caption defaults are both `gemma-4-31b-it`. Fireworks audio-visual inference is optional. If it is unavailable, unconfigured, times out, or produces invalid evidence, GemmaClip deletes the temporary audio candidate and continues through Google Gemma 4 31B using six visual frames. Google 31B never receives audio in this fallback policy. `GOOGLE_GEMMA_AUDIO_VISUAL_MODEL` is reserved for explicit future experimentation and is not the production fallback for Fireworks Unified.
+The Google visual and caption defaults are both `gemma-4-31b-it`. Fireworks audio-visual inference is optional. If the configured AMD Cloud or Fireworks audio-visual attempt is unavailable, times out, or produces invalid evidence, GemmaClip deletes the temporary audio candidate and continues through Google Gemma 4 31B using six visual frames. Google 31B never receives audio in this fallback policy. `GOOGLE_GEMMA_AUDIO_VISUAL_MODEL` is reserved for explicit future experimentation and is not the production fallback for the audio-visual role.
 
 Configured values are opaque callable model or deployment IDs. If no Fireworks key exists, Google visual 31B is used directly. If evidence fails everywhere, the task receives deterministic validated fallback captions. If caption synthesis fails after evidence succeeds, the evidence-based fallback preserves the grounded subject, action, and setting.
 
@@ -49,6 +49,9 @@ GOOGLE_API_KEY or GEMINI_API_KEY
 FIREWORKS_GEMMA_VISUAL_MODEL
 FIREWORKS_GEMMA_AUDIO_VISUAL_MODEL
 FIREWORKS_GEMMA_CAPTION_MODEL
+AMD_GEMMA_AUDIO_VISUAL_API_KEY
+AMD_GEMMA_AUDIO_VISUAL_BASE_URL
+AMD_GEMMA_AUDIO_VISUAL_MODEL=gemma-4-12b-it
 GOOGLE_GEMMA_VISUAL_MODEL
 GOOGLE_GEMMA_AUDIO_VISUAL_MODEL
 GOOGLE_GEMMA_CAPTION_MODEL

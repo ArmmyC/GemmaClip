@@ -50,6 +50,16 @@ def test_execution_provenance_overrides_audio_inference():
     assert adapted["audioFallbackOccurred"] is True
 
 
+def test_amd_audio_model_keeps_actual_safe_model_label():
+    execution = EvidenceExecution("amd_cloud", "gemma-4-12b-it", "audio_visual", True, True, False, None)
+    route, reason = selected_route_from_evidence({"audio": {"available": True}}, execution)
+    adapted = adapt_evidence({"audio": {"available": True}}, selected_route=route, route_reason=reason, execution=execution)
+    assert route == "gemma-4-12b-unified"
+    assert adapted["routeProvider"] == "amd_cloud"
+    assert adapted["routeModel"] == "Gemma 4 12B"
+    assert "Gemma 4 12B produced audio-visual evidence" in reason
+
+
 def test_grounding_availability_never_claims_per_caption_use():
     adapted = adapt_captions({"formal": "A grounded caption."}, {"audio": {"status": "usable", "visual_consistency": "contradictory", "allowed_caption_facts": ["speech"]}})
     assert adapted[0]["groundingContext"] == {"visualEvidenceAvailable": False, "audioEvidenceAvailable": False}

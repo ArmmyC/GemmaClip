@@ -144,7 +144,7 @@ def selected_route_from_evidence(evidence: Mapping[str, Any], execution: Evidenc
         if execution.fallback_reason:
             return selected, execution.fallback_reason
         if execution.modality == "audio_visual":
-            return selected, "Gemma 4 12B Unified produced evidence from six frames and the selected audio window."
+            return selected, f"{_safe_model_label(execution.model)} produced audio-visual evidence from six frames and the selected audio window."
         return selected, f"{execution.provider.title()} {_safe_model_label(execution.model)} produced visual-only evidence from six frames."
     audio = evidence.get("audio") if isinstance(evidence.get("audio"), Mapping) else {}
     status = str(audio.get("status", "unavailable")).lower()
@@ -201,8 +201,10 @@ def _safe_model_label(model: str) -> str:
     lowered = model.lower()
     if "31b" in lowered:
         return "Gemma 4 31B"
-    if "12b" in lowered:
+    if "12b" in lowered and "unified" in lowered:
         return "Gemma 4 12B Unified"
+    if "12b" in lowered:
+        return "Gemma 4 12B"
     if "26b" in lowered:
         return "Gemma 4 26B A4B"
     return "Configured Gemma model"

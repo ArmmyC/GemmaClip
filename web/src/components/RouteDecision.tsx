@@ -9,6 +9,7 @@ interface Props {
   audio: StructuredEvidence["audio"];
   className?: string;
   provider?: string;
+  model?: string;
   modality?: "visual" | "audio_visual";
   audioFallbackOccurred?: boolean;
 }
@@ -19,7 +20,7 @@ const ROUTE_LABEL: Record<Exclude<ModelRoute, "auto">, string> = {
   "gemma-4-31b": "Gemma 4 31B",
 };
 
-export function RouteDecision({ selected, reason, auto, audio, className, provider, modality, audioFallbackOccurred }: Props) {
+export function RouteDecision({ selected, reason, auto, audio, className, provider, model, modality, audioFallbackOccurred }: Props) {
   const visualOnly = modality === "visual" || (modality === undefined && selected !== "gemma-4-12b-unified");
   return (
     <section className={cn("glass-panel overflow-hidden rounded-xl", className)} aria-label="Route decision">
@@ -34,7 +35,7 @@ export function RouteDecision({ selected, reason, auto, audio, className, provid
         <div className="hidden h-14 w-px bg-white/10 md:block" aria-hidden="true" />
         <div>
           <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Model / modality</div>
-          <div className="mt-2 text-2xl font-semibold tracking-tight">{ROUTE_LABEL[selected]}</div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight">{model ?? ROUTE_LABEL[selected]}</div>
           <div className="mt-3 flex flex-wrap gap-2">
             {auto && <InstrumentLabel>automatic</InstrumentLabel>}
             <InstrumentLabel tone="ember">{visualOnly ? "visual only" : "visual + audio"}</InstrumentLabel>
