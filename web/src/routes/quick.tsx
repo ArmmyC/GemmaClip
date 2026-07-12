@@ -13,6 +13,7 @@ import { startQuickUpload } from "@/lib/quick-flow";
 import type { Run, RunStatusResponse } from "@/lib/types";
 import { ServiceHealthNotice } from "@/components/ServiceHealth";
 import { useHealth } from "@/lib/hooks";
+import { getHealthActionState } from "@/lib/health";
 
 type Search = { runId?: string };
 export const Route = createFileRoute("/quick")({ validateSearch: (s: Record<string, unknown>): Search => ({ runId: typeof s.runId === "string" ? s.runId : undefined }), component: QuickCaption });
@@ -35,8 +36,7 @@ function QuickCaption() {
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const health = useHealth();
-  const serviceUnavailable = health.isError || health.data?.status === "unavailable";
-  const generationUnavailable = serviceUnavailable || health.isPending || health.data?.providersConfigured === false;
+  const { generationUnavailable } = getHealthActionState(health);
 
   useEffect(() => {
     if (!runId) return;

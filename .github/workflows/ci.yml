@@ -104,3 +104,13 @@ jobs:
       - name: Stop and remove web container
         if: always()
         run: docker rm --force gemmaclip-web-test || true
+
+  competition-container:
+    name: Competition container build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build competition image
+        run: docker build -f Dockerfile -t gemmaclip-cli:test .

@@ -8,6 +8,7 @@ import { startQuickUpload } from "@/lib/quick-flow";
 import { createAndProbeManualRun } from "@/lib/api";
 import { ServiceHealthNotice } from "@/components/ServiceHealth";
 import { useHealth } from "@/lib/hooks";
+import { getHealthActionState } from "@/lib/health";
 
 export const Route = createFileRoute("/")({ component: Landing });
 
@@ -24,8 +25,7 @@ function Landing() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const health = useHealth();
-  const serviceUnavailable = health.isError || health.data?.status === "unavailable";
-  const generationUnavailable = serviceUnavailable || health.isPending || health.data?.providersConfigured === false;
+  const { serviceUnavailable, generationUnavailable } = getHealthActionState(health);
 
   async function generate() {
     if (!file) return;

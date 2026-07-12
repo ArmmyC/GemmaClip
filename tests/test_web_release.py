@@ -27,9 +27,12 @@ def _client(tmp_path, *, env=None, app_env=None):
     return TestClient(create_app(storage=storage, services=services, jobs=jobs, env=app_env or {}))
 
 
-def test_health_is_degraded_without_credentials_and_contains_only_safe_state(tmp_path):
+def test_health_is_degraded_without_credentials_and_contains_only_safe_state(tmp_path, monkeypatch):
+    monkeypatch.setattr("gemmaclip.web.app.shutil.which", lambda name: f"/usr/bin/{name}")
     client = _client(tmp_path)
-    payload = client.get("/api/health").json()
+    response = client.get("/api/health")
+    payload = response.json()
+    assert response.status_code == 200
     assert payload["status"] == "degraded"
     assert payload["providersConfigured"] is False
     assert payload["storage"] == "available"
@@ -41,7 +44,9 @@ def test_health_is_degraded_without_credentials_and_contains_only_safe_state(tmp
 def test_health_is_ok_when_core_services_and_a_provider_are_configured(tmp_path, monkeypatch):
     monkeypatch.setattr("gemmaclip.web.app.shutil.which", lambda name: f"/usr/bin/{name}")
     client = _client(tmp_path, env={"GOOGLE_API_KEY": "test-secret"})
-    payload = client.get("/api/health").json()
+    response = client.get("/api/health")
+    payload = response.json()
+    assert response.status_code == 200
     assert payload["status"] == "ok"
     assert payload["mediaTools"] == {"ffmpeg": "available", "ffprobe": "available"}
     assert "test-secret" not in json.dumps(payload)
@@ -53,9 +58,31 @@ def test_health_reports_unavailable_storage(tmp_path):
     services = WebServices(storage, env={})
     jobs = JobManager(storage, services, executor=NoopExecutor())
     client = TestClient(create_app(storage=storage, services=services, jobs=jobs, env={}))
-    payload = client.get("/api/health").json()
+    response = client.get("/api/health")
+    payload = response.json()
+    assert response.status_code == 503
     assert payload["status"] == "unavailable"
     assert payload["storage"] == "unavailable"
+
+
+def test_health_reports_unavailable_when_ffmpeg_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr("gemmaclip.web.app.shutil.which", lambda name: None if name == "ffmpeg" else f"/usr/bin/{name}")
+    client = _client(tmp_path, env={"GOOGLE_API_KEY": "test-secret"})
+    response = client.get("/api/health")
+    assert response.status_code == 503
+    assert response.json()["status"] == "unavailable"
+    assert response.json()["providersConfigured"] is True
+    assert response.json()["mediaTools"]["ffmpeg"] == "unavailable"
+
+
+def test_health_reports_unavailable_when_ffprobe_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr("gemmaclip.web.app.shutil.which", lambda name: None if name == "ffprobe" else f"/usr/bin/{name}")
+    client = _client(tmp_path, env={"GOOGLE_API_KEY": "test-secret"})
+    response = client.get("/api/health")
+    assert response.status_code == 503
+    assert response.json()["status"] == "unavailable"
+    assert response.json()["providersConfigured"] is True
+    assert response.json()["mediaTools"]["ffprobe"] == "unavailable"
 
 
 def test_static_frontend_fallback_excludes_api_and_unknown_assets(tmp_path):

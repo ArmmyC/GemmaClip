@@ -8,6 +8,7 @@ import { createAndProbeManualRun } from "@/lib/api";
 import { startQuickUpload } from "@/lib/quick-flow";
 import { ServiceHealthNotice } from "@/components/ServiceHealth";
 import { useHealth } from "@/lib/hooks";
+import { getHealthActionState } from "@/lib/health";
 
 export const Route = createFileRoute("/lab")({ component: LabEntry });
 
@@ -17,8 +18,7 @@ function LabEntry() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const health = useHealth();
-  const serviceUnavailable = health.isError || health.data?.status === "unavailable";
-  const generationUnavailable = serviceUnavailable || health.isPending || health.data?.providersConfigured === false;
+  const { serviceUnavailable, generationUnavailable } = getHealthActionState(health);
 
   async function openLab() {
     if (!file) { setError("Choose a video first."); return; }

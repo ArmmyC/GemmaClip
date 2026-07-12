@@ -37,9 +37,12 @@ def test_upload_config_media_delete_and_secret_filtering(tmp_path):
     assert client.get(f"/api/runs/{run_id}").status_code == 404
 
 
-def test_health_metadata_status_and_frame_endpoints(tmp_path):
+def test_health_metadata_status_and_frame_endpoints(tmp_path, monkeypatch):
+    monkeypatch.setattr("gemmaclip.web.app.shutil.which", lambda name: f"/usr/bin/{name}")
     client, storage = client_for(tmp_path)
-    health = client.get("/api/health").json()
+    health_response = client.get("/api/health")
+    assert health_response.status_code == 200
+    health = health_response.json()
     assert health["status"] == "degraded"
     assert health["storage"] == "available"
     assert health["jobManager"] == "available"

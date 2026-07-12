@@ -11,6 +11,7 @@ import { ProcessingState, StageErrorState, StaleStageNotice } from "@/components
 import type { Experiment } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { runKey } from "@/lib/hooks";
+import { copyText } from "@/lib/clipboard";
 
 export const Route = createFileRoute("/lab/$runId/compare")({ component: CompareStage });
 
@@ -93,9 +94,10 @@ function ComparisonView({ comparison }: { comparison: ExperimentComparison }) {
       `caption (${comparison.left.style}) A: ${comparison.left.caption}`,
       `caption (${comparison.right.style}) B: ${comparison.right.caption}`,
     ];
-    await navigator.clipboard?.writeText(lines.join("\n"));
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    if (await copyText(lines.join("\n"))) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    }
   }
   return <div className="space-y-6"><div className="flex justify-end"><Button type="button" variant="outline" size="sm" className="min-h-11 gap-2" onClick={copySummary}>{copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {copied ? "Copied" : "Copy comparison summary"}</Button></div><div className="grid gap-6 lg:grid-cols-2"><ExperimentColumn side="A" experiment={comparison.left} /><ExperimentColumn side="B" experiment={comparison.right} /></div><div className="overflow-hidden rounded-xl border border-border bg-card"><div className="flex items-center justify-between border-b border-border px-4 py-3"><div className="font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground">configuration diff</div><ArrowLeftRight className="h-4 w-4 text-muted-foreground" /></div><table className="w-full text-sm"><tbody className="divide-y divide-border">{fields.map(([label, field]) => <Row key={label} label={label} left={comparison.left[field as keyof Experiment]} right={comparison.right[field as keyof Experiment]} />)}</tbody></table></div></div>;
 }

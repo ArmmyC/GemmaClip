@@ -35,11 +35,14 @@ def create_api_router() -> APIRouter:
     router = APIRouter(prefix="/api")
 
     @router.get("/health", response_model=HealthResponse)
-    def health(request: Request) -> HealthResponse:
+    def health(request: Request, response: Response) -> HealthResponse:
         from gemmaclip.web.app import build_health_response
 
         storage, services, jobs = _dependencies(request)
-        return build_health_response(storage, services, jobs)
+        result = build_health_response(storage, services, jobs)
+        if result.status == "unavailable":
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return result
 
     @router.get("/config", response_model=ConfigResponse)
     def config(request: Request) -> ConfigResponse:

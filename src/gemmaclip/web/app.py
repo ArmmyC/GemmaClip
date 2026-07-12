@@ -105,9 +105,9 @@ def build_health_response(storage: RunStorage, services: WebServices, jobs: JobM
         ffprobe="available" if shutil.which("ffprobe") else "unavailable",
     )
     job_ok = jobs.health_available()
-    if not storage_ok or not job_ok:
+    if not storage_ok or not job_ok or media.ffmpeg != "available" or media.ffprobe != "available":
         status = "unavailable"
-    elif media.ffmpeg != "available" or media.ffprobe != "available" or not services.credentials_configured():
+    elif not services.credentials_configured():
         status = "degraded"
     else:
         status = "ok"
