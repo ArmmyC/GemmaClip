@@ -1,4 +1,8 @@
+<div align="center">
+
 # GemmaClip
+
+</div>
 
 <p align="center">
   <strong>Grounded video captions with an inspectable Gemma 4 pipeline.</strong><br />
